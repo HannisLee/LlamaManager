@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 # ── 路径常量 ──────────────────────────────────────────────
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
-LAST_LAUNCH_PATH = APP_DIR / "last_launch.json"
+MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
 
 # ── 全局进程状态 ──────────────────────────────────────────
 _current_process: Optional[subprocess.Popen] = None
@@ -125,21 +125,23 @@ def _validate_extra_args(extra: str) -> Optional[str]:
     return None
 
 
-def _load_last_launch() -> dict:
-    """读取上次启动参数"""
+def _load_model_params() -> dict:
+    """读取所有模型的启动参数，格式: {model_path: {port, extra_args}}"""
     try:
-        if LAST_LAUNCH_PATH.exists():
-            return json.loads(LAST_LAUNCH_PATH.read_text(encoding="utf-8"))
+        if MODEL_PARAMS_PATH.exists():
+            return json.loads(MODEL_PARAMS_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         pass
     return {}
 
 
-def _save_last_launch(data: dict):
-    """保存本次启动参数"""
+def _save_model_param(model: str, port: int, extra_args: str):
+    """保存单个模型的启动参数"""
+    params = _load_model_params()
+    params[model] = {"port": port, "extra_args": extra_args}
     try:
-        LAST_LAUNCH_PATH.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        MODEL_PARAMS_PATH.write_text(
+            json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8"
         )
     except OSError:
         pass
@@ -223,6 +225,12 @@ def _stop_process_internal() -> Optional[str]:
 async def index():
     """返回 index.html"""
     return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/icon.png")
+async def get_icon():
+    """返回网站图标"""
+    return FileResponse(APP_DIR / "icon.png", media_type="image/png")
 
 
 @app.get("/api/settings")
@@ -374,13 +382,8 @@ async def start_server(body: dict = None):
         _current_port = port
         _current_host = host
 
-        # 保存上次启动参数
-        _save_last_launch({
-            "model": model,
-            "host": host,
-            "port": port,
-            "extra_args": extra_args,
-        })
+        # 按模型保存启动参数
+        _save_model_param(model, port, extra_args)
 
         result = {
             "ok": True,
@@ -409,21 +412,29 @@ async def restart_server():
         # 停止当前进程
         _stop_process_internal()
 
-    # 从 last_launch.json 或内存状态获取上次参数
-    last = _load_last_launch()
-    if not last.get("model"):
+    # 从内存状态获取上次参数
+    if not _current_model:
         raise HTTPException(
             status_code=400,
             detail="没有可重启的参数（之前未启动过）"
         )
 
+    # 从 model_params 获取该模型的参数
+    params = _load_model_params()
+    model_param = params.get(_current_model, {})
+    last = {
+        "model": _current_model,
+        "port": model_param.get("port", 8083),
+        "extra_args": model_param.get("extra_args", ""),
+    }
+
     return await start_server(last)
 
 
-@app.get("/api/last-launch")
-async def get_last_launch():
-    """获取上次启动参数"""
-    return JSONResponse(_load_last_launch())
+@app.get("/api/model-params")
+async def get_model_params():
+    """获取所有模型的启动参数"""
+    return JSONResponse(_load_model_params())
 
 
 @app.get("/api/logs")

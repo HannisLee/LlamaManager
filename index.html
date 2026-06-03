@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LlamaManager</title>
+    <link rel="icon" href="/icon.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -190,7 +191,7 @@
 </div>
 
 <div class="container">
-    <h1>&#x1f42e; LlamaManager</h1>
+    <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> LlamaManager</h1>
 
     <!-- 第一块：状态 -->
     <div class="card">
@@ -221,7 +222,7 @@
         <h2>启动服务</h2>
         <div class="form-grid">
             <label for="start-model">模型</label>
-            <select id="start-model">
+            <select id="start-model" onchange="onModelChange()">
                 <option value="">-- 请先扫描模型 --</option>
             </select>
 
@@ -335,26 +336,25 @@ async function loadSettings() {
     return currentSettings;
 }
 
-async function loadLastLaunch() {
+let modelParams = {};
+
+async function loadModelParams() {
     try {
-        const last = await api("GET", "/api/last-launch");
-        if (last.extra_args) {
-            document.getElementById("start-extra").value = last.extra_args;
-        }
-        if (last.port) {
-            document.getElementById("start-port").value = last.port;
-        }
-        if (last.model) {
-            // 等模型列表加载完后设置选中
-            const select = document.getElementById("start-model");
-            for (const opt of select.options) {
-                if (opt.value === last.model) {
-                    opt.selected = true;
-                    break;
-                }
-            }
-        }
+        modelParams = await api("GET", "/api/model-params");
     } catch (e) {}
+}
+
+function onModelChange() {
+    const model = document.getElementById("start-model").value;
+    const params = modelParams[model];
+    if (params) {
+        document.getElementById("start-port").value = params.port || 8083;
+        document.getElementById("start-extra").value = params.extra_args || "";
+    } else {
+        // 未启动过的模型，恢复默认
+        document.getElementById("start-port").value = currentSettings.port || 8083;
+        document.getElementById("start-extra").value = "";
+    }
 }
 
 async function saveSettings() {
@@ -558,7 +558,7 @@ async function loadDownloadLogs() {
 // ── 初始化 ────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-    loadSettings().then(() => loadModels()).then(() => loadLastLaunch());
+    loadSettings().then(() => loadModels()).then(() => loadModelParams());
     loadStatus();
     loadLogs();
     loadDownloadLogs();

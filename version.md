@@ -76,3 +76,11 @@
 - llama-server 未运行时返回 503 错误
 - "Open WebUI" 按钮改为打开 `/llama/` 代理地址
 - requirements.txt 加入 httpx
+
+## v0.0.10 — 2026-06-04
+
+- 网站图标和页面标题替换为 icon.png
+- `last_launch.json` 改为 `model_params.json`，按模型路径独立存储 port 和 extra_args
+- 新增 `/api/model-params` 端点，一次性返回所有模型参数到前端
+- 模型下拉框切换时自动加载对应模型的参数（未启动过的模型为空）
+- 启动成功后自动保存该模型的参数
