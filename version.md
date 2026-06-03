@@ -45,3 +45,10 @@
 - 新增 version.md 版本变更记录
 - 新增 CLAUDE.md 项目指令（含版本号递增规则）
 - 初始化 git 仓库并推送到 GitHub（https://github.com/HannisLee/LlamaManager）
+
+## v0.0.6 — 2026-06-03
+
+- 更新 README.md：配置表只保留实际配置项，移除 API 参考部分
+- README.md 新增「下载模型」功能说明
+- llama-server 默认端口从 8080 改为 8083
+- `llama_server_path` 和 `model_dir` 不再显示默认值
