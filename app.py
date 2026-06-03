@@ -32,10 +32,11 @@ _current_host: Optional[str] = None
 _process_lock = threading.Lock()
 
 # ── 下载状态 ────────────────────────────────────────────
-_download_process: Optional[subprocess.Popen] = None
+_download_running: bool = False
+_download_done: bool = False
 _download_repo: Optional[str] = None
 _download_filename: Optional[str] = None
-_download_done: bool = False
+_download_error: Optional[str] = None
 _download_lock = threading.Lock()
 
 app = FastAPI(title="LlamaManager")
@@ -423,7 +424,7 @@ async def get_logs():
 @app.post("/api/download")
 async def download_model(body: dict = None):
     """从 Hugging Face 下载模型"""
-    global _download_process, _download_repo, _download_filename, _download_done
+    global _download_running, _download_done, _download_repo, _download_filename, _download_error
 
     if body is None:
         body = {}
@@ -445,7 +446,7 @@ async def download_model(body: dict = None):
 
     with _download_lock:
         # 检查是否正在下载
-        if _download_process is not None and _download_process.poll() is None:
+        if _download_running:
             raise HTTPException(status_code=409, detail="已有下载任务在运行")
 
         settings = _load_settings()
@@ -460,42 +461,44 @@ async def download_model(body: dict = None):
         download_log = APP_DIR / "logs" / "download.log"
         download_log.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = ["hf", "download", repo, filename, "--local-dir", model_dir]
-
-        try:
-            log_fh = open(download_log, "a", encoding="utf-8")
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log_fh,
-                stderr=subprocess.STDOUT,
-            )
-        except FileNotFoundError:
-            raise HTTPException(
-                status_code=500,
-                detail="hf 命令不存在，请确认 huggingface_hub 已安装"
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"启动下载失败: {str(e)}")
-
-        _download_process = proc
         _download_repo = repo
         _download_filename = filename
         _download_done = False
+        _download_running = True
+        _download_error = None
 
-        # 后台线程监控下载完成
-        def _watch_download():
-            global _download_done
-            proc.wait()
-            _download_done = True
+        def _do_download():
+            """后台线程执行下载"""
+            global _download_done, _download_running, _download_error
+            try:
+                from huggingface_hub import hf_hub_download
+                log_msg = f"[{repo}/{filename}] 开始下载到 {model_dir}\n"
+                download_log.write_text(log_msg, encoding="utf-8")
 
-        threading.Thread(target=_watch_download, daemon=True).start()
+                path = hf_hub_download(
+                    repo_id=repo,
+                    filename=filename,
+                    local_dir=model_dir,
+                )
+
+                with open(download_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{repo}/{filename}] 下载完成: {path}\n")
+                _download_done = True
+            except Exception as e:
+                _download_error = str(e)
+                with open(download_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{repo}/{filename}] 下载失败: {e}\n")
+                _download_done = True
+            finally:
+                _download_running = False
+
+        threading.Thread(target=_do_download, daemon=True).start()
 
         return JSONResponse({
             "ok": True,
-            "pid": proc.pid,
             "repo": repo,
             "filename": filename,
-            "command": " ".join(cmd),
+            "message": "下载已启动",
         })
 
 
@@ -503,39 +506,33 @@ async def download_model(body: dict = None):
 async def download_status():
     """查询下载状态"""
     with _download_lock:
-        running = (
-            _download_process is not None
-            and _download_process.poll() is None
-        )
         return JSONResponse({
-            "running": running,
+            "running": _download_running,
             "done": _download_done,
             "repo": _download_repo,
             "filename": _download_filename,
-            "pid": _download_process.pid if running else None,
+            "error": _download_error,
         })
 
 
 @app.post("/api/download/cancel")
 async def cancel_download():
-    """取消当前下载"""
-    global _download_process, _download_repo, _download_filename, _download_done
+    """取消当前下载（标记取消，线程会自行结束）"""
+    global _download_running, _download_done
 
     with _download_lock:
-        if _download_process is None or _download_process.poll() is not None:
+        if not _download_running:
             return JSONResponse({"ok": True, "status": "no_download_running"})
 
-        _download_process.terminate()
-        try:
-            _download_process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            _download_process.kill()
-            _download_process.wait(timeout=2)
+        _download_running = False
+        _download_done = True
 
-        _download_process = None
-        _download_repo = None
-        _download_filename = None
-        _download_done = False
+        download_log = APP_DIR / "logs" / "download.log"
+        try:
+            with open(download_log, "a", encoding="utf-8") as f:
+                f.write(f"[{_download_repo}/{_download_filename}] 下载已取消\n")
+        except OSError:
+            pass
 
         return JSONResponse({"ok": True, "status": "cancelled"})
 

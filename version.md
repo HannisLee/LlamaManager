@@ -61,3 +61,10 @@
 - 日志 textarea 高度优化：min 80px / max 300px / 默认 150px，可拖拽
 - 服务日志和下载日志行数从 200 改为 100
 - 下载日志每 5 秒自动刷新
+
+## v0.0.8 — 2026-06-03
+
+- 下载方式从 `hf` CLI 改为 Python `huggingface_hub.hf_hub_download` API，解决未认证问题
+- 下载状态管理从 subprocess 改为标志位（`_download_running` / `_download_done` / `_download_error`）
+- 后台线程执行下载，日志写入 `logs/download.log`
+- 下载完成后状态返回 error 字段
