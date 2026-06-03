@@ -1,0 +1,532 @@
+"""
+LlamaManager - 轻量级 llama.cpp Web 管理工具
+通过单页面 WebUI 管理 llama-server 进程
+"""
+
+import json
+import os
+import shlex
+import signal
+import subprocess
+import tempfile
+import threading
+from pathlib import Path
+from typing import Optional
+
+import psutil
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+
+# ── 路径常量 ──────────────────────────────────────────────
+APP_DIR = Path(__file__).resolve().parent
+SETTINGS_PATH = APP_DIR / "settings.json"
+LAST_LAUNCH_PATH = APP_DIR / "last_launch.json"
+
+# ── 全局进程状态 ──────────────────────────────────────────
+_current_process: Optional[subprocess.Popen] = None
+_current_command: Optional[list] = None
+_current_model: Optional[str] = None
+_current_port: Optional[int] = None
+_current_host: Optional[str] = None
+_process_lock = threading.Lock()
+
+# ── 下载状态 ────────────────────────────────────────────
+_download_process: Optional[subprocess.Popen] = None
+_download_repo: Optional[str] = None
+_download_filename: Optional[str] = None
+_download_done: bool = False
+_download_lock = threading.Lock()
+
+app = FastAPI(title="LlamaManager")
+
+
+# ── 工具函数 ──────────────────────────────────────────────
+
+def _load_settings() -> dict:
+    """读取 settings.json，文件不存在或解析失败返回空 dict"""
+    try:
+        if SETTINGS_PATH.exists():
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            # 展开 ~ 路径
+            for key in ("llama_server_path", "model_dir", "log_file"):
+                if key in data and isinstance(data[key], str):
+                    data[key] = str(Path(data[key]).expanduser())
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_settings(data: dict) -> dict:
+    """原子写入 settings.json，返回写入后的完整 settings"""
+    existing = _load_settings()
+    existing.update(data)
+    # 原子写入：先写临时文件再 rename
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(APP_DIR), suffix=".json.tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(SETTINGS_PATH))
+    except Exception:
+        # 清理临时文件
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return existing
+
+
+def _validate_extra_args(extra: str) -> Optional[str]:
+    """
+    校验 extra_args，返回错误信息或 None（表示通过）。
+    """
+    if not extra or not extra.strip():
+        return None
+    try:
+        tokens = shlex.split(extra)
+    except ValueError as e:
+        return f"Extra args 解析失败: {e}"
+    # 禁止 shell 注入字符
+    dangerous = {"|", ">", "<", ";", "&", "`", "$", "(", ")", "#"}
+    for t in tokens:
+        if any(c in t for c in dangerous):
+            return f"Extra args 包含不允许的字符: '{t}'"
+    return None
+
+
+def _load_last_launch() -> dict:
+    """读取上次启动参数"""
+    try:
+        if LAST_LAUNCH_PATH.exists():
+            return json.loads(LAST_LAUNCH_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_last_launch(data: dict):
+    """保存本次启动参数"""
+    try:
+        LAST_LAUNCH_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _build_command(settings: dict, overrides: dict) -> list:
+    """拼接 llama-server 启动命令：基础参数 + extra_args"""
+    s = {**settings, **overrides}
+    cmd = [s["llama_server_path"], "-m", s["model"]]
+    cmd += ["--host", str(s.get("host", "0.0.0.0"))]
+    cmd += ["--port", str(s.get("port", 8080))]
+
+    extra = s.get("extra_args", "").strip()
+    if extra:
+        cmd += shlex.split(extra)
+
+    return cmd
+
+
+def _kill_port_occupant(port: int, protected: list) -> Optional[dict]:
+    """
+    杀掉占用指定端口的进程。
+    返回被杀进程信息 {"pid": ..., "name": ...} 或 None。
+    """
+    if port in protected:
+        return None
+
+    killed = []
+    for conn in psutil.net_connections(kind="inet"):
+        if conn.laddr and conn.laddr.port == port and conn.status == "LISTEN":
+            pid = conn.pid
+            if pid is None or pid == 1:
+                continue
+            try:
+                proc = psutil.Process(pid)
+                proc_name = proc.name()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except psutil.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                killed.append({"pid": pid, "name": proc_name})
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+    return killed[0] if killed else None
+
+
+def _stop_process_internal() -> Optional[str]:
+    """停止当前管理的 llama-server 进程，返回停止信息或 None"""
+    global _current_process, _current_command, _current_model, _current_port, _current_host
+
+    if _current_process is None or _current_process.poll() is not None:
+        _current_process = None
+        _current_command = None
+        _current_model = None
+        _current_port = None
+        _current_host = None
+        return None
+
+    info = f"PID {_current_process.pid}"
+    _current_process.terminate()
+    try:
+        _current_process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        _current_process.kill()
+        _current_process.wait(timeout=2)
+
+    _current_process = None
+    _current_command = None
+    _current_model = None
+    _current_port = None
+    _current_host = None
+    return info
+
+
+# ── API 端点 ──────────────────────────────────────────────
+
+@app.get("/")
+async def index():
+    """返回 index.html"""
+    return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """读取 settings.json"""
+    return JSONResponse(_load_settings())
+
+
+@app.post("/api/settings")
+async def save_settings(data: dict):
+    """保存 settings.json"""
+    try:
+        saved = _save_settings(data)
+        return JSONResponse({"ok": True, "data": saved})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/models")
+async def get_models():
+    """扫描 model_dir 下所有 .gguf 文件（递归）"""
+    settings = _load_settings()
+    model_dir = settings.get("model_dir", "")
+    models = []
+
+    if model_dir and Path(model_dir).is_dir():
+        for p in sorted(Path(model_dir).rglob("*.gguf")):
+            try:
+                stat = p.stat()
+                models.append({
+                    "name": p.name,
+                    "path": str(p),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                })
+            except OSError:
+                pass
+
+    return JSONResponse({"models": models, "model_dir": model_dir})
+
+
+@app.get("/api/status")
+async def get_status():
+    """获取当前 llama-server 运行状态"""
+    with _process_lock:
+        running = (
+            _current_process is not None
+            and _current_process.poll() is None
+        )
+        url = None
+        if running and _current_host and _current_port:
+            url = f"http://{_current_host}:{_current_port}"
+
+        return JSONResponse({
+            "running": running,
+            "pid": _current_process.pid if running else None,
+            "command": " ".join(_current_command) if running and _current_command else None,
+            "model": _current_model if running else None,
+            "host": _current_host if running else None,
+            "port": _current_port if running else None,
+            "url": url,
+        })
+
+
+@app.post("/api/start")
+async def start_server(body: dict = None):
+    """启动 llama-server"""
+    global _current_process, _current_command, _current_model, _current_port, _current_host
+
+    if body is None:
+        body = {}
+
+    with _process_lock:
+        # 如果已有进程在运行，先停止
+        if _current_process is not None and _current_process.poll() is None:
+            _stop_process_internal()
+
+        settings = _load_settings()
+
+        # 合并参数
+        model = body.get("model") or settings.get("model", "")
+        host = body.get("host") or settings.get("host", "0.0.0.0")
+        port = body.get("port") or settings.get("port", 8080)
+        port = int(port)
+        extra_args = body.get("extra_args", "")
+
+        # 校验 extra_args
+        err = _validate_extra_args(extra_args)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
+        llama_server_path = settings.get("llama_server_path", "")
+        auto_kill_port = body.get("auto_kill_port", settings.get("auto_kill_port", True))
+        protected_ports = settings.get("protected_ports", [22])
+
+        # 校验 llama-server 路径
+        if not llama_server_path or not Path(llama_server_path).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"llama-server 不存在: {llama_server_path}"
+            )
+
+        # 校验模型文件
+        if not model or not Path(model).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"模型文件不存在: {model}"
+            )
+
+        # 处理端口占用
+        killed_info = None
+        if auto_kill_port:
+            killed_info = _kill_port_occupant(port, protected_ports)
+
+        # 构建启动命令
+        overrides = {
+            "model": model,
+            "host": host,
+            "port": port,
+            "extra_args": extra_args,
+        }
+
+        cmd = _build_command(settings, overrides)
+
+        # 准备日志目录
+        log_file = settings.get("log_file", "./logs/llama-server.log")
+        log_path = Path(log_file)
+        if not log_path.is_absolute():
+            log_path = APP_DIR / log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 启动进程
+        try:
+            log_fh = open(log_path, "a", encoding="utf-8")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"启动失败: {str(e)}"
+            )
+
+        _current_process = proc
+        _current_command = cmd
+        _current_model = model
+        _current_port = port
+        _current_host = host
+
+        # 保存上次启动参数
+        _save_last_launch({
+            "model": model,
+            "host": host,
+            "port": port,
+            "extra_args": extra_args,
+        })
+
+        result = {
+            "ok": True,
+            "pid": proc.pid,
+            "url": f"http://{host}:{port}",
+            "command": " ".join(cmd),
+            "killed": killed_info,
+        }
+        return JSONResponse(result)
+
+
+@app.post("/api/stop")
+async def stop_server():
+    """停止 llama-server"""
+    with _process_lock:
+        info = _stop_process_internal()
+        if info is None:
+            return JSONResponse({"ok": True, "status": "already_stopped"})
+        return JSONResponse({"ok": True, "status": "stopped", "detail": f"Stopped {info}"})
+
+
+@app.post("/api/restart")
+async def restart_server():
+    """重启 llama-server（使用上一次的参数）"""
+    with _process_lock:
+        # 停止当前进程
+        _stop_process_internal()
+
+    # 从 last_launch.json 或内存状态获取上次参数
+    last = _load_last_launch()
+    if not last.get("model"):
+        raise HTTPException(
+            status_code=400,
+            detail="没有可重启的参数（之前未启动过）"
+        )
+
+    return await start_server(last)
+
+
+@app.get("/api/last-launch")
+async def get_last_launch():
+    """获取上次启动参数"""
+    return JSONResponse(_load_last_launch())
+
+
+@app.get("/api/logs")
+async def get_logs():
+    """读取日志文件尾部"""
+    settings = _load_settings()
+    log_file = settings.get("log_file", "./logs/llama-server.log")
+    log_path = Path(log_file)
+    if not log_path.is_absolute():
+        log_path = APP_DIR / log_path
+
+    if not log_path.exists():
+        return JSONResponse({"logs": ""})
+
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+        return JSONResponse({"logs": "\n".join(lines[-200:])})
+    except Exception as e:
+        return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
+
+
+# ── 下载 API ────────────────────────────────────────────
+
+@app.post("/api/download")
+async def download_model(body: dict = None):
+    """从 Hugging Face 下载模型"""
+    global _download_process, _download_repo, _download_filename, _download_done
+
+    if body is None:
+        body = {}
+
+    repo = body.get("repo", "").strip()
+    filename = body.get("filename", "").strip()
+
+    if not repo:
+        raise HTTPException(status_code=400, detail="请输入仓库名")
+    if not filename:
+        raise HTTPException(status_code=400, detail="请输入文件名")
+
+    with _download_lock:
+        # 检查是否正在下载
+        if _download_process is not None and _download_process.poll() is None:
+            raise HTTPException(status_code=409, detail="已有下载任务在运行")
+
+        settings = _load_settings()
+        model_dir = settings.get("model_dir", "")
+        if not model_dir:
+            raise HTTPException(status_code=400, detail="未设置模型目录")
+
+        # 确保 model_dir 存在
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+
+        # 准备下载日志
+        download_log = APP_DIR / "logs" / "download.log"
+        download_log.parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = ["hf", "download", repo, filename, "--local-dir", model_dir]
+
+        try:
+            log_fh = open(download_log, "a", encoding="utf-8")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=500,
+                detail="hf 命令不存在，请确认 huggingface_hub 已安装"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"启动下载失败: {str(e)}")
+
+        _download_process = proc
+        _download_repo = repo
+        _download_filename = filename
+        _download_done = False
+
+        # 后台线程监控下载完成
+        def _watch_download():
+            global _download_done
+            proc.wait()
+            _download_done = True
+
+        threading.Thread(target=_watch_download, daemon=True).start()
+
+        return JSONResponse({
+            "ok": True,
+            "pid": proc.pid,
+            "repo": repo,
+            "filename": filename,
+            "command": " ".join(cmd),
+        })
+
+
+@app.get("/api/download/status")
+async def download_status():
+    """查询下载状态"""
+    with _download_lock:
+        running = (
+            _download_process is not None
+            and _download_process.poll() is None
+        )
+        return JSONResponse({
+            "running": running,
+            "done": _download_done,
+            "repo": _download_repo,
+            "filename": _download_filename,
+            "pid": _download_process.pid if running else None,
+        })
+
+
+@app.post("/api/download/cancel")
+async def cancel_download():
+    """取消当前下载"""
+    global _download_process, _download_repo, _download_filename, _download_done
+
+    with _download_lock:
+        if _download_process is None or _download_process.poll() is not None:
+            return JSONResponse({"ok": True, "status": "no_download_running"})
+
+        _download_process.terminate()
+        try:
+            _download_process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            _download_process.kill()
+            _download_process.wait(timeout=2)
+
+        _download_process = None
+        _download_repo = None
+        _download_filename = None
+        _download_done = False
+
+        return JSONResponse({"ok": True, "status": "cancelled"})

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LlamaManager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            padding: 20px 0;
+            font-size: 1.8em;
+            color: #fff;
+            border-bottom: 2px solid #333;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .card h2 {
+            font-size: 1.1em;
+            color: #aaa;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* 错误横幅 */
+        #error-bar {
+            display: none;
+            background: #c62828;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        #error-bar button {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.2em;
+            margin-left: 10px;
+            cursor: pointer;
+        }
+
+        /* 状态徽章 */
+        .badge {
+            display: inline-block;
+            padding: 3px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+        .badge-running { background: #2e7d32; color: #fff; }
+        .badge-stopped { background: #555; color: #ccc; }
+
+        /* 状态信息行 */
+        .status-info {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 4px 12px;
+            margin: 10px 0;
+            font-size: 0.95em;
+        }
+        .status-info dt { color: #888; }
+        .status-info dd {
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            color: #e0e0e0;
+            word-break: break-all;
+        }
+
+        /* 按钮组 */
+        .btn-group { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* 按钮 */
+        button, .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.85; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-primary { background: #1565c0; color: #fff; }
+        .btn-danger { background: #c62828; color: #fff; }
+        .btn-success { background: #2e7d32; color: #fff; }
+        .btn-secondary { background: #444; color: #ccc; }
+        .btn-warning { background: #e65100; color: #fff; }
+
+        /* 表单 */
+        .form-grid {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            gap: 8px 12px;
+            align-items: center;
+        }
+        .form-grid label {
+            color: #aaa;
+            font-size: 0.9em;
+            text-align: right;
+        }
+        .form-grid input,
+        .form-grid select {
+            width: 100%;
+            padding: 6px 10px;
+            background: #0f1629;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 0.9em;
+        }
+        .form-grid input:focus,
+        .form-grid select:focus {
+            outline: none;
+            border-color: #1565c0;
+        }
+        .form-grid select option {
+            background: #0f1629;
+            color: #e0e0e0;
+        }
+
+        .full-width { grid-column: 1 / -1; }
+
+        /* 日志区域 */
+        #log-area {
+            width: 100%;
+            height: 250px;
+            background: #0a0a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #b0b0b0;
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            font-size: 0.85em;
+            padding: 10px;
+            resize: vertical;
+            overflow-y: auto;
+        }
+
+        /* checkbox */
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .checkbox-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #1565c0;
+        }
+        .checkbox-row label {
+            color: #aaa;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+
+<!-- 错误横幅 -->
+<div id="error-bar">
+    <span id="error-text"></span>
+    <button onclick="clearError()">&times;</button>
+</div>
+
+<div class="container">
+    <h1>&#x1f42e; LlamaManager</h1>
+
+    <!-- 第一块：状态 -->
+    <div class="card">
+        <h2>状态</h2>
+        <div>
+            <span id="status-badge" class="badge badge-stopped">Stopped</span>
+        </div>
+        <dl class="status-info">
+            <dt>PID</dt>
+            <dd id="status-pid">-</dd>
+            <dt>模型</dt>
+            <dd id="status-model">-</dd>
+            <dt>URL</dt>
+            <dd id="status-url">-</dd>
+            <dt>命令</dt>
+            <dd id="status-command">-</dd>
+        </dl>
+        <div class="btn-group">
+            <button class="btn-secondary" onclick="loadStatus()">Refresh</button>
+            <button class="btn-primary" id="btn-open" onclick="openWebUI()" disabled>Open WebUI</button>
+            <button class="btn-danger" id="btn-stop" onclick="stopServer()" disabled>Stop</button>
+            <button class="btn-warning" id="btn-restart" onclick="restartServer()" disabled>Restart</button>
+        </div>
+    </div>
+
+    <!-- 第二块：设置 -->
+    <div class="card">
+        <h2>设置</h2>
+        <div class="form-grid">
+            <label for="set-server-path">llama-server 路径</label>
+            <input type="text" id="set-server-path" placeholder="/path/to/llama-server">
+            <label for="set-model-dir">模型目录</label>
+            <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
+        </div>
+        <div class="btn-group" style="margin-top:12px">
+            <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+            <button class="btn-secondary" onclick="loadModels()">Rescan Models</button>
+        </div>
+    </div>
+
+    <!-- 下载模型 -->
+    <div class="card">
+        <h2>下载模型</h2>
+        <div class="form-grid">
+            <label for="dl-repo">仓库</label>
+            <input type="text" id="dl-repo" placeholder="tencent/Hy-MT2-7B-GGUF">
+            <label for="dl-filename">文件名</label>
+            <input type="text" id="dl-filename" placeholder="HY-MT2-7B-Q8_0.gguf">
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:12px;">
+            <button class="btn-success" id="btn-download" onclick="startDownload()">Download</button>
+            <button class="btn-danger" id="btn-dl-cancel" onclick="cancelDownload()" disabled>Cancel</button>
+            <span id="dl-status-badge" class="badge badge-stopped">Idle</span>
+            <span id="dl-status-text" style="color:#888; font-size:0.85em;"></span>
+        </div>
+    </div>
+
+    <!-- 第三块：启动 -->
+    <div class="card">
+        <h2>启动服务</h2>
+        <div class="form-grid">
+            <label for="start-model">模型</label>
+            <select id="start-model">
+                <option value="">-- 请先扫描模型 --</option>
+            </select>
+
+            <label for="start-port">Port</label>
+            <input type="number" id="start-port" value="8080">
+
+            <label for="start-extra">Extra Args</label>
+            <input type="text" id="start-extra" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
+
+            <div class="full-width checkbox-row">
+                <input type="checkbox" id="start-auto-kill" checked>
+                <label for="start-auto-kill">端口被占用时自动 kill 占用进程</label>
+            </div>
+        </div>
+        <div class="btn-group" style="margin-top:12px">
+            <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
+        </div>
+    </div>
+
+    <!-- 第四块：日志 -->
+    <div class="card">
+        <h2>日志</h2>
+        <div class="btn-group" style="margin-bottom:10px">
+            <button class="btn-secondary" onclick="loadLogs()">Refresh Logs</button>
+        </div>
+        <textarea id="log-area" readonly placeholder="暂无日志"></textarea>
+    </div>
+</div>
+
+<script>
+// ── 全局状态 ──────────────────────────────────────────
+let currentSettings = {};
+let statusInterval = null;
+let logInterval = null;
+
+// ── 工具函数 ──────────────────────────────────────────
+
+function showError(msg) {
+    const bar = document.getElementById("error-bar");
+    document.getElementById("error-text").textContent = msg;
+    bar.style.display = "block";
+    setTimeout(clearError, 5000);
+}
+
+function clearError() {
+    document.getElementById("error-bar").style.display = "none";
+}
+
+async function api(method, path, body) {
+    const opts = { method, headers: { "Content-Type": "application/json" } };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const resp = await fetch(path, opts);
+    const data = await resp.json();
+    if (!resp.ok) {
+        const msg = data.detail || data.error || JSON.stringify(data);
+        showError(msg);
+        throw new Error(msg);
+    }
+    return data;
+}
+
+// ── 设置 ──────────────────────────────────────────────
+
+async function loadSettings() {
+    currentSettings = await api("GET", "/api/settings");
+    document.getElementById("set-server-path").value = currentSettings.llama_server_path || "";
+    document.getElementById("set-model-dir").value = currentSettings.model_dir || "";
+    document.getElementById("start-port").value = currentSettings.port || 8080;
+    document.getElementById("start-auto-kill").checked = currentSettings.auto_kill_port !== false;
+    return currentSettings;
+}
+
+async function loadLastLaunch() {
+    try {
+        const last = await api("GET", "/api/last-launch");
+        if (last.extra_args) {
+            document.getElementById("start-extra").value = last.extra_args;
+        }
+        if (last.port) {
+            document.getElementById("start-port").value = last.port;
+        }
+        if (last.model) {
+            // 等模型列表加载完后设置选中
+            const select = document.getElementById("start-model");
+            for (const opt of select.options) {
+                if (opt.value === last.model) {
+                    opt.selected = true;
+                    break;
+                }
+            }
+        }
+    } catch (e) {}
+}
+
+async function saveSettings() {
+    const data = {
+        llama_server_path: document.getElementById("set-server-path").value,
+        model_dir: document.getElementById("set-model-dir").value,
+        host: "0.0.0.0",
+        port: parseInt(document.getElementById("start-port").value) || 8080,
+        auto_kill_port: document.getElementById("start-auto-kill").checked,
+    };
+    await api("POST", "/api/settings", data);
+    alert("设置已保存");
+}
+
+// ── 模型扫描 ──────────────────────────────────────────
+
+async function loadModels() {
+    const data = await api("GET", "/api/models");
+    const select = document.getElementById("start-model");
+    // 清空选项
+    select.innerHTML = "";
+    if (data.models.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "-- 未找到 GGUF 模型 --";
+        select.appendChild(opt);
+    } else {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "-- 选择模型 --";
+        select.appendChild(placeholder);
+        data.models.forEach(m => {
+            const opt = document.createElement("option");
+            opt.value = m.path;
+            // 显示文件名 + 大小
+            const sizeMB = (m.size / 1024 / 1024).toFixed(0);
+            opt.textContent = `${m.name} (${sizeMB} MB)`;
+            select.appendChild(opt);
+        });
+    }
+}
+
+// ── 状态 ──────────────────────────────────────────────
+
+async function loadStatus() {
+    try {
+        const data = await api("GET", "/api/status");
+        updateStatusUI(data);
+    } catch (e) {
+        // 静默处理
+    }
+}
+
+function updateStatusUI(data) {
+    const badge = document.getElementById("status-badge");
+    const btnStop = document.getElementById("btn-stop");
+    const btnRestart = document.getElementById("btn-restart");
+    const btnOpen = document.getElementById("btn-open");
+    const btnStart = document.getElementById("btn-start");
+
+    if (data.running) {
+        badge.textContent = "Running";
+        badge.className = "badge badge-running";
+        document.getElementById("status-pid").textContent = data.pid || "-";
+        document.getElementById("status-model").textContent = data.model ? data.model.split("/").pop() : "-";
+        document.getElementById("status-url").textContent = data.url || "-";
+        document.getElementById("status-command").textContent = data.command || "-";
+        btnStop.disabled = false;
+        btnRestart.disabled = false;
+        btnOpen.disabled = false;
+        btnStart.disabled = true;
+    } else {
+        badge.textContent = "Stopped";
+        badge.className = "badge badge-stopped";
+        document.getElementById("status-pid").textContent = "-";
+        document.getElementById("status-model").textContent = "-";
+        document.getElementById("status-url").textContent = "-";
+        document.getElementById("status-command").textContent = "-";
+        btnStop.disabled = true;
+        btnRestart.disabled = true;
+        btnOpen.disabled = true;
+        btnStart.disabled = false;
+    }
+}
+
+// ── 启动 / 停止 / 重启 ───────────────────────────────
+
+async function startServer() {
+    const body = {
+        model: document.getElementById("start-model").value,
+        host: "0.0.0.0",
+        port: parseInt(document.getElementById("start-port").value) || 8080,
+        extra_args: document.getElementById("start-extra").value,
+        auto_kill_port: document.getElementById("start-auto-kill").checked,
+    };
+
+    try {
+        const result = await api("POST", "/api/start", body);
+        loadStatus();
+        loadLogs();
+    } catch (e) {}
+}
+
+async function stopServer() {
+    try {
+        await api("POST", "/api/stop");
+        loadStatus();
+    } catch (e) {}
+}
+
+async function restartServer() {
+    try {
+        await api("POST", "/api/restart");
+        loadStatus();
+        loadLogs();
+    } catch (e) {}
+}
+
+function openWebUI() {
+    const url = document.getElementById("status-url").textContent;
+    if (url && url !== "-") {
+        window.open(url, "_blank");
+    }
+}
+
+// ── 日志 ──────────────────────────────────────────────
+
+async function loadLogs() {
+    try {
+        const data = await api("GET", "/api/logs");
+        document.getElementById("log-area").value = data.logs || "";
+    } catch (e) {}
+}
+
+// ── 下载 ──────────────────────────────────────────────
+
+async function startDownload() {
+    const repo = document.getElementById("dl-repo").value.trim();
+    const filename = document.getElementById("dl-filename").value.trim();
+    if (!repo || !filename) {
+        showError("请输入仓库名和文件名");
+        return;
+    }
+    try {
+        await api("POST", "/api/download", { repo, filename });
+        updateDownloadUI({ running: true, done: false, repo, filename });
+    } catch (e) {}
+}
+
+async function cancelDownload() {
+    try {
+        await api("POST", "/api/download/cancel");
+        updateDownloadUI({ running: false, done: false });
+    } catch (e) {}
+}
+
+async function loadDownloadStatus() {
+    try {
+        const data = await api("GET", "/api/download/status");
+        updateDownloadUI(data);
+        // 下载刚完成时自动刷新模型列表
+        if (data.done && !data.running) {
+            loadModels();
+        }
+    } catch (e) {}
+}
+
+function updateDownloadUI(data) {
+    const badge = document.getElementById("dl-status-badge");
+    const text = document.getElementById("dl-status-text");
+    const btnDl = document.getElementById("btn-download");
+    const btnCancel = document.getElementById("btn-dl-cancel");
+
+    if (data.running) {
+        badge.textContent = "Downloading";
+        badge.className = "badge badge-running";
+        text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
+        btnDl.disabled = true;
+        btnCancel.disabled = false;
+    } else if (data.done) {
+        badge.textContent = "Done";
+        badge.className = "badge badge-running";
+        text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
+        btnDl.disabled = false;
+        btnCancel.disabled = true;
+    } else {
+        badge.textContent = "Idle";
+        badge.className = "badge badge-stopped";
+        text.textContent = "";
+        btnDl.disabled = false;
+        btnCancel.disabled = true;
+    }
+}
+
+// ── 初始化 ────────────────────────────────────────────
+
+document.addEventListener("DOMContentLoaded", () => {
+    loadSettings().then(() => loadModels()).then(() => loadLastLaunch());
+    loadStatus();
+    loadLogs();
+
+    // 自动刷新
+    setInterval(loadStatus, 3000);
+    setInterval(loadLogs, 5000);
+    setInterval(loadDownloadStatus, 3000);
+    loadDownloadStatus();
+});
+</script>
+
+</body>
+</html>
