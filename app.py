@@ -16,6 +16,7 @@ from typing import Optional
 
 import httpx
 import psutil
+import tqdm as _tqdm_module
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
@@ -39,6 +40,26 @@ _download_repo: Optional[str] = None
 _download_filename: Optional[str] = None
 _download_error: Optional[str] = None
 _download_lock = threading.Lock()
+
+# ── 下载进度追踪 ──────────────────────────────────────
+_download_progress_n: int = 0
+_download_progress_total: int = 0
+
+
+class _DownloadTqdm(_tqdm_module.tqdm):
+    """自定义 tqdm，将下载进度写入全局变量供 API 查询"""
+
+    def __init__(self, *args, **kwargs):
+        global _download_progress_n, _download_progress_total
+        super().__init__(*args, **kwargs)
+        _download_progress_total = self.total or 0
+        _download_progress_n = 0
+
+    def update(self, n=1):
+        global _download_progress_n
+        result = super().update(n)
+        _download_progress_n = self.n
+        return result
 
 app = FastAPI(title="LlamaManager")
 
@@ -216,6 +237,19 @@ def _stop_process_internal() -> Optional[str]:
     _current_model = None
     _current_port = None
     _current_host = None
+
+    # 停止后清空日志文件
+    try:
+        settings = _load_settings()
+        log_file = settings.get("log_file", "./logs/llama-server.log")
+        log_path = Path(log_file)
+        if not log_path.is_absolute():
+            log_path = APP_DIR / log_path
+        if log_path.exists():
+            open(log_path, "w", encoding="utf-8").close()
+    except OSError:
+        pass
+
     return info
 
 
@@ -462,12 +496,14 @@ async def get_logs():
 async def download_model(body: dict = None):
     """从 Hugging Face 下载模型"""
     global _download_running, _download_done, _download_repo, _download_filename, _download_error
+    global _download_progress_n, _download_progress_total
 
     if body is None:
         body = {}
 
     repo = body.get("repo", "").strip()
     filename = body.get("filename", "").strip()
+    force_download = body.get("force_download", False)
 
     if not repo:
         raise HTTPException(status_code=400, detail="请输入仓库名")
@@ -503,19 +539,38 @@ async def download_model(body: dict = None):
         _download_done = False
         _download_running = True
         _download_error = None
+        _download_progress_n = 0
+        _download_progress_total = 0
+
+        # 获取远程文件大小
+        remote_size = None
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            model_info = api.model_info(repo_id=repo, files_metadata=True)
+            for sibling in (model_info.siblings or []):
+                if sibling.rfilename == filename:
+                    remote_size = sibling.size
+                    break
+        except Exception:
+            pass
 
         def _do_download():
             """后台线程执行下载"""
             global _download_done, _download_running, _download_error
+            global _download_progress_n, _download_progress_total
             try:
                 from huggingface_hub import hf_hub_download
-                log_msg = f"[{repo}/{filename}] 开始下载到 {model_dir}\n"
+                size_info = f" ({remote_size / 1024 / 1024:.1f} MB)" if remote_size else ""
+                log_msg = f"[{repo}/{filename}] 开始下载到 {model_dir}{size_info}\n"
                 download_log.write_text(log_msg, encoding="utf-8")
 
                 path = hf_hub_download(
                     repo_id=repo,
                     filename=filename,
                     local_dir=model_dir,
+                    force_download=force_download,
+                    tqdm_class=_DownloadTqdm,
                 )
 
                 with open(download_log, "a", encoding="utf-8") as f:
@@ -543,12 +598,24 @@ async def download_model(body: dict = None):
 async def download_status():
     """查询下载状态"""
     with _download_lock:
+        # 构建进度信息
+        progress = None
+        if _download_progress_total > 0:
+            pct = _download_progress_n / _download_progress_total * 100
+            progress = {
+                "downloaded": _download_progress_n,
+                "total": _download_progress_total,
+                "percentage": round(pct, 1),
+                "downloaded_mb": round(_download_progress_n / 1024 / 1024, 1),
+                "total_mb": round(_download_progress_total / 1024 / 1024, 1),
+            }
         return JSONResponse({
             "running": _download_running,
             "done": _download_done,
             "repo": _download_repo,
             "filename": _download_filename,
             "error": _download_error,
+            "progress": progress,
         })
 
 

@@ -266,6 +266,21 @@
             <span id="dl-status-badge" class="badge badge-stopped">Idle</span>
             <span id="dl-status-text" style="color:#888; font-size:0.85em;"></span>
         </div>
+        <!-- 进度条 -->
+        <div id="dl-progress-wrap" style="display:none; margin-top:10px;">
+            <div style="background:#0a0a1a; border-radius:4px; overflow:hidden; height:20px; border:1px solid #333;">
+                <div id="dl-progress-bar" style="height:100%; background:linear-gradient(90deg,#1565c0,#2e7d32); width:0%; transition:width 0.3s;"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:0.8em; color:#888; margin-top:4px;">
+                <span id="dl-progress-text">0%</span>
+                <span id="dl-progress-size">0 MB / 0 MB</span>
+            </div>
+        </div>
+        <!-- 强制重新下载 -->
+        <div class="checkbox-row" style="margin-top:8px;">
+            <input type="checkbox" id="dl-force">
+            <label for="dl-force">强制重新下载（忽略本地缓存校验）</label>
+        </div>
     </div>
 
     <!-- 第五块：下载日志 -->
@@ -461,6 +476,7 @@ async function startServer() {
 async function stopServer() {
     try {
         await api("POST", "/api/stop");
+        document.getElementById("log-area").value = "";
         loadStatus();
     } catch (e) {}
 }
@@ -491,13 +507,14 @@ async function loadLogs() {
 async function startDownload() {
     const repo = document.getElementById("dl-repo").value.trim();
     const filename = document.getElementById("dl-filename").value.trim();
+    const force_download = document.getElementById("dl-force").checked;
     if (!repo || !filename) {
         showError("请输入仓库名和文件名");
         return;
     }
     try {
-        await api("POST", "/api/download", { repo, filename });
-        updateDownloadUI({ running: true, done: false, repo, filename });
+        await api("POST", "/api/download", { repo, filename, force_download });
+        updateDownloadUI({ running: true, done: false, repo, filename, progress: null });
     } catch (e) {}
 }
 
@@ -524,6 +541,10 @@ function updateDownloadUI(data) {
     const text = document.getElementById("dl-status-text");
     const btnDl = document.getElementById("btn-download");
     const btnCancel = document.getElementById("btn-dl-cancel");
+    const progressWrap = document.getElementById("dl-progress-wrap");
+    const progressBar = document.getElementById("dl-progress-bar");
+    const progressText = document.getElementById("dl-progress-text");
+    const progressSize = document.getElementById("dl-progress-size");
 
     if (data.running) {
         badge.textContent = "Downloading";
@@ -531,18 +552,40 @@ function updateDownloadUI(data) {
         text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
         btnDl.disabled = true;
         btnCancel.disabled = false;
+        // 更新进度条
+        if (data.progress && data.progress.total > 0) {
+            progressWrap.style.display = "block";
+            progressBar.style.width = data.progress.percentage + "%";
+            progressText.textContent = data.progress.percentage + "%";
+            progressSize.textContent = `${data.progress.downloaded_mb} MB / ${data.progress.total_mb} MB`;
+        } else {
+            progressWrap.style.display = "block";
+            progressBar.style.width = "0%";
+            progressText.textContent = "准备中...";
+            progressSize.textContent = "";
+        }
     } else if (data.done) {
         badge.textContent = "Done";
         badge.className = "badge badge-running";
         text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
         btnDl.disabled = false;
         btnCancel.disabled = true;
+        // 完成时显示100%
+        if (data.progress && data.progress.total > 0) {
+            progressWrap.style.display = "block";
+            progressBar.style.width = "100%";
+            progressText.textContent = "100%";
+            progressSize.textContent = `${data.progress.total_mb} MB`;
+        } else {
+            progressWrap.style.display = "none";
+        }
     } else {
         badge.textContent = "Idle";
         badge.className = "badge badge-stopped";
         text.textContent = "";
         btnDl.disabled = false;
         btnCancel.disabled = true;
+        progressWrap.style.display = "none";
     }
 }
 
