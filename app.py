@@ -5,6 +5,7 @@ LlamaManager - 轻量级 llama.cpp Web 管理工具
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -412,7 +413,7 @@ async def get_logs():
 
     try:
         lines = log_path.read_text(errors="replace").splitlines()
-        return JSONResponse({"logs": "\n".join(lines[-200:])})
+        return JSONResponse({"logs": "\n".join(lines[-100:])})
     except Exception as e:
         return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
 
@@ -434,6 +435,13 @@ async def download_model(body: dict = None):
         raise HTTPException(status_code=400, detail="请输入仓库名")
     if not filename:
         raise HTTPException(status_code=400, detail="请输入文件名")
+
+    # 校验仓库格式：owner/repo
+    if not re.match(r'^[a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+$', repo):
+        raise HTTPException(status_code=400, detail="仓库名格式错误，应为 owner/repo（如 tencent/Hy-MT2-7B-GGUF）")
+    # 校验文件名：必须 .gguf 结尾
+    if not re.match(r'^[a-zA-Z0-9_.\-]+\.gguf$', filename):
+        raise HTTPException(status_code=400, detail="文件名格式错误，必须以 .gguf 结尾")
 
     with _download_lock:
         # 检查是否正在下载
@@ -530,3 +538,18 @@ async def cancel_download():
         _download_done = False
 
         return JSONResponse({"ok": True, "status": "cancelled"})
+
+
+@app.get("/api/download/logs")
+async def get_download_logs():
+    """读取下载日志尾部"""
+    download_log = APP_DIR / "logs" / "download.log"
+
+    if not download_log.exists():
+        return JSONResponse({"logs": ""})
+
+    try:
+        lines = download_log.read_text(errors="replace").splitlines()
+        return JSONResponse({"logs": "\n".join(lines[-100:])})
+    except Exception as e:
+        return JSONResponse({"logs": f"读取日志失败: {str(e)}"})

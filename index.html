@@ -147,9 +147,11 @@
         .full-width { grid-column: 1 / -1; }
 
         /* 日志区域 */
-        #log-area {
+        .log-area {
             width: 100%;
-            height: 250px;
+            min-height: 80px;
+            max-height: 300px;
+            height: 150px;
             background: #0a0a1a;
             border: 1px solid #333;
             border-radius: 4px;
@@ -214,22 +216,41 @@
         </div>
     </div>
 
-    <!-- 第二块：设置 -->
+    <!-- 第二块：启动服务 -->
     <div class="card">
-        <h2>设置</h2>
+        <h2>启动服务</h2>
         <div class="form-grid">
-            <label for="set-server-path">llama-server 路径</label>
-            <input type="text" id="set-server-path" placeholder="/path/to/llama-server">
-            <label for="set-model-dir">模型目录</label>
-            <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
+            <label for="start-model">模型</label>
+            <select id="start-model">
+                <option value="">-- 请先扫描模型 --</option>
+            </select>
+
+            <label for="start-port">Port</label>
+            <input type="number" id="start-port" value="8083">
+
+            <label for="start-extra">Extra Args</label>
+            <input type="text" id="start-extra" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
+
+            <div class="full-width checkbox-row">
+                <input type="checkbox" id="start-auto-kill" checked>
+                <label for="start-auto-kill">端口被占用时自动 kill 占用进程</label>
+            </div>
         </div>
         <div class="btn-group" style="margin-top:12px">
-            <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
-            <button class="btn-secondary" onclick="loadModels()">Rescan Models</button>
+            <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
         </div>
     </div>
 
-    <!-- 下载模型 -->
+    <!-- 第三块：服务日志 -->
+    <div class="card">
+        <h2>服务日志</h2>
+        <div class="btn-group" style="margin-bottom:10px">
+            <button class="btn-secondary" onclick="loadLogs()">Refresh Logs</button>
+        </div>
+        <textarea id="log-area" class="log-area" readonly placeholder="暂无日志"></textarea>
+    </div>
+
+    <!-- 第四块：下载模型 -->
     <div class="card">
         <h2>下载模型</h2>
         <div class="form-grid">
@@ -246,38 +267,28 @@
         </div>
     </div>
 
-    <!-- 第三块：启动 -->
+    <!-- 第五块：下载日志 -->
     <div class="card">
-        <h2>启动服务</h2>
-        <div class="form-grid">
-            <label for="start-model">模型</label>
-            <select id="start-model">
-                <option value="">-- 请先扫描模型 --</option>
-            </select>
-
-            <label for="start-port">Port</label>
-            <input type="number" id="start-port" value="8080">
-
-            <label for="start-extra">Extra Args</label>
-            <input type="text" id="start-extra" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
-
-            <div class="full-width checkbox-row">
-                <input type="checkbox" id="start-auto-kill" checked>
-                <label for="start-auto-kill">端口被占用时自动 kill 占用进程</label>
-            </div>
+        <h2>下载日志</h2>
+        <div class="btn-group" style="margin-bottom:10px">
+            <button class="btn-secondary" onclick="loadDownloadLogs()">Refresh Logs</button>
         </div>
-        <div class="btn-group" style="margin-top:12px">
-            <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
-        </div>
+        <textarea id="dl-log-area" class="log-area" readonly placeholder="暂无下载日志"></textarea>
     </div>
 
-    <!-- 第四块：日志 -->
+    <!-- 第六块：设置 -->
     <div class="card">
-        <h2>日志</h2>
-        <div class="btn-group" style="margin-bottom:10px">
-            <button class="btn-secondary" onclick="loadLogs()">Refresh Logs</button>
+        <h2>设置</h2>
+        <div class="form-grid">
+            <label for="set-server-path">llama-server 路径</label>
+            <input type="text" id="set-server-path" placeholder="/path/to/llama-server">
+            <label for="set-model-dir">模型目录</label>
+            <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
         </div>
-        <textarea id="log-area" readonly placeholder="暂无日志"></textarea>
+        <div class="btn-group" style="margin-top:12px">
+            <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+            <button class="btn-secondary" onclick="loadModels()">Rescan Models</button>
+        </div>
     </div>
 </div>
 
@@ -538,17 +549,28 @@ function updateDownloadUI(data) {
     }
 }
 
+// ── 下载日志 ──────────────────────────────────────────
+
+async function loadDownloadLogs() {
+    try {
+        const data = await api("GET", "/api/download/logs");
+        document.getElementById("dl-log-area").value = data.logs || "";
+    } catch (e) {}
+}
+
 // ── 初始化 ────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
     loadSettings().then(() => loadModels()).then(() => loadLastLaunch());
     loadStatus();
     loadLogs();
+    loadDownloadLogs();
 
     // 自动刷新
     setInterval(loadStatus, 3000);
     setInterval(loadLogs, 5000);
     setInterval(loadDownloadStatus, 3000);
+    setInterval(loadDownloadLogs, 5000);
     loadDownloadStatus();
 });
 </script>
