@@ -68,3 +68,11 @@
 - 下载状态管理从 subprocess 改为标志位（`_download_running` / `_download_done` / `_download_error`）
 - 后台线程执行下载，日志写入 `logs/download.log`
 - 下载完成后状态返回 error 字段
+
+## v0.0.9 — 2026-06-04
+
+- 新增反向代理：`/llama/{path}` 转发到 llama-server，通过 frp 同一端口即可访问 llama-server WebUI
+- 使用 httpx.AsyncClient 流式转发，支持 SSE 长连接
+- llama-server 未运行时返回 503 错误
+- "Open WebUI" 按钮改为打开 `/llama/` 代理地址
+- requirements.txt 加入 httpx

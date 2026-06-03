@@ -474,10 +474,7 @@ async function restartServer() {
 }
 
 function openWebUI() {
-    const url = document.getElementById("status-url").textContent;
-    if (url && url !== "-") {
-        window.open(url, "_blank");
-    }
+    window.open("/llama/", "_blank");
 }
 
 // ── 日志 ──────────────────────────────────────────────

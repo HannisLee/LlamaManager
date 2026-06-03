@@ -14,9 +14,10 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import psutil
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 # ── 路径常量 ──────────────────────────────────────────────
 APP_DIR = Path(__file__).resolve().parent
@@ -40,6 +41,31 @@ _download_error: Optional[str] = None
 _download_lock = threading.Lock()
 
 app = FastAPI(title="LlamaManager")
+
+# ── 反向代理 ────────────────────────────────────────────
+_proxy_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_proxy_client() -> httpx.AsyncClient:
+    """获取或创建 llama-server 代理客户端"""
+    global _proxy_client
+    settings = _load_settings()
+    host = settings.get("host", "0.0.0.0")
+    port = settings.get("port", 8083)
+    base_url = f"http://127.0.0.1:{port}"
+    if _proxy_client is None or str(_proxy_client.base_url) != base_url:
+        if _proxy_client is not None:
+            # 基地址变了，关闭旧的
+            import asyncio
+            try:
+                asyncio.get_event_loop().create_task(_proxy_client.aclose())
+            except Exception:
+                pass
+        _proxy_client = httpx.AsyncClient(
+            base_url=base_url,
+            timeout=httpx.Timeout(300.0, connect=5.0),
+        )
+    return _proxy_client
 
 
 # ── 工具函数 ──────────────────────────────────────────────
@@ -550,3 +576,57 @@ async def get_download_logs():
         return JSONResponse({"logs": "\n".join(lines[-100:])})
     except Exception as e:
         return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
+
+
+# ── 反向代理 llama-server ──────────────────────────────
+
+@app.api_route("/llama/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_llama(path: str, request: Request):
+    """反向代理到 llama-server，支持流式响应"""
+    client = _get_proxy_client()
+
+    # 构建转发 headers，去掉 host
+    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+
+    body = await request.body()
+
+    try:
+        # 判断是否需要流式响应（SSE）
+        accept = request.headers.get("accept", "")
+        need_stream = "text/event-stream" in accept
+
+        if need_stream:
+            async def stream_response():
+                async with client.stream(
+                    method=request.method,
+                    url=f"/{path}",
+                    headers=headers,
+                    content=body if body else None,
+                    params=request.query_params,
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+
+            return StreamingResponse(
+                stream_response(),
+                status_code=200,
+                media_type="text/event-stream",
+            )
+        else:
+            resp = await client.request(
+                method=request.method,
+                url=f"/{path}",
+                headers=headers,
+                content=body if body else None,
+                params=request.query_params,
+            )
+            excluded = {"content-length", "content-encoding", "transfer-encoding"}
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers={k: v for k, v in resp.headers.items() if k.lower() not in excluded},
+            )
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="llama-server 未运行或无法连接")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
