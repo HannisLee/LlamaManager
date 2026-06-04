@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
 MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
+GPU_HISTORY_PATH = APP_DIR / "gpu_history.json"
 
 # ── 全局进程状态 ──────────────────────────────────────────
 _current_process: Optional[subprocess.Popen] = None
@@ -33,7 +35,13 @@ _current_command: Optional[list] = None
 _current_model: Optional[str] = None
 _current_port: Optional[int] = None
 _current_host: Optional[str] = None
+_managed_processes: dict[int, dict] = {}
 _process_lock = threading.Lock()
+
+# ── GPU 历史状态 ───────────────────────────────────────
+_gpu_history_lock = threading.Lock()
+_last_gpu_sample_ts: float = 0
+GPU_SAMPLE_INTERVAL_SECONDS = 5
 
 # ── 下载状态 ────────────────────────────────────────────
 _download_running: bool = False
@@ -183,6 +191,138 @@ def _to_int(value, default=0) -> int:
         return default
 
 
+def _get_gpu_history_hours(settings: Optional[dict] = None) -> float:
+    """读取 GPU 历史小时数设置，默认 2 小时"""
+    if settings is None:
+        settings = _load_settings()
+    try:
+        hours = float(settings.get("gpu_history_hours", 2))
+    except (TypeError, ValueError):
+        hours = 2
+    return min(max(hours, 0.25), 168)
+
+
+def _load_gpu_history() -> dict:
+    """读取本地 GPU 历史文件"""
+    try:
+        if GPU_HISTORY_PATH.exists():
+            data = json.loads(GPU_HISTORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("samples"), list):
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {"samples": []}
+
+
+def _save_gpu_history(data: dict):
+    """原子写入 GPU 历史文件"""
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(APP_DIR), suffix=".gpu_history.tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, str(GPU_HISTORY_PATH))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _append_gpu_history_sample(gpus: list, history_hours: float):
+    """按最小采样间隔写入 GPU util 历史"""
+    global _last_gpu_sample_ts
+
+    now = time.time()
+    with _gpu_history_lock:
+        if now - _last_gpu_sample_ts < GPU_SAMPLE_INTERVAL_SECONDS:
+            return
+
+        history = _load_gpu_history()
+        sample = {
+            "timestamp": now,
+            "gpus": [
+                {
+                    "index": gpu["index"],
+                    "name": gpu.get("name", ""),
+                    "gpu_util": gpu.get("gpu_util", 0),
+                }
+                for gpu in gpus
+            ],
+        }
+        keep_seconds = (max(history_hours, 2) + 1) * 3600
+        cutoff = now - keep_seconds
+        samples = [
+            s for s in history.get("samples", [])
+            if float(s.get("timestamp", 0) or 0) >= cutoff
+        ]
+        samples.append(sample)
+        _save_gpu_history({"samples": samples})
+        _last_gpu_sample_ts = now
+
+
+def _history_by_gpu(history_hours: float) -> dict:
+    """按 GPU index 整理最近 X 小时 util 历史"""
+    cutoff = time.time() - history_hours * 3600
+    history = _load_gpu_history()
+    by_gpu = {}
+    for sample in history.get("samples", []):
+        ts = float(sample.get("timestamp", 0) or 0)
+        if ts < cutoff:
+            continue
+        for gpu in sample.get("gpus", []):
+            index = _to_int(gpu.get("index"), default=-1)
+            if index < 0:
+                continue
+            by_gpu.setdefault(index, []).append({
+                "timestamp": ts,
+                "gpu_util": _to_int(gpu.get("gpu_util")),
+            })
+    return by_gpu
+
+
+def _gpus_from_history(history_hours: float) -> list:
+    """nvidia-smi 不可用时，从本地历史文件恢复每卡波形数据"""
+    history = _load_gpu_history()
+    by_gpu = _history_by_gpu(history_hours)
+    latest = {}
+    for sample in history.get("samples", []):
+        ts = float(sample.get("timestamp", 0) or 0)
+        for gpu in sample.get("gpus", []):
+            index = _to_int(gpu.get("index"), default=-1)
+            if index < 0:
+                continue
+            if index not in latest or ts >= latest[index]["timestamp"]:
+                latest[index] = {
+                    "timestamp": ts,
+                    "name": gpu.get("name", f"GPU {index}"),
+                    "gpu_util": _to_int(gpu.get("gpu_util")),
+                }
+
+    gpus = []
+    for index in sorted(by_gpu):
+        info = latest.get(index, {})
+        gpus.append({
+            "index": index,
+            "name": info.get("name", f"GPU {index}"),
+            "driver_version": "",
+            "uuid": "",
+            "bus_id": "",
+            "gpu_util": info.get("gpu_util", 0),
+            "used_mem": None,
+            "total_mem": None,
+            "temperature": None,
+            "process_count": 0,
+            "users": [],
+            "processes": [],
+            "history": by_gpu.get(index, []),
+            "stale": True,
+        })
+    return gpus
+
+
 def _parse_csv_lines(output: str) -> list:
     """解析 nvidia-smi CSV 输出"""
     if not output.strip():
@@ -303,8 +443,104 @@ def _get_process_detail(pid: int) -> dict:
     return detail
 
 
+def _is_process_running(proc: subprocess.Popen) -> bool:
+    """判断 Popen 进程是否仍在运行"""
+    return proc is not None and proc.poll() is None
+
+
+def _sync_current_from_managed():
+    """用最新存活的受管实例同步旧版单实例状态"""
+    global _current_process, _current_command, _current_model, _current_port, _current_host
+
+    live_items = [
+        item for item in _managed_processes.values()
+        if _is_process_running(item.get("process"))
+    ]
+    dead_pids = [
+        pid for pid, item in _managed_processes.items()
+        if not _is_process_running(item.get("process"))
+    ]
+    for pid in dead_pids:
+        _managed_processes.pop(pid, None)
+
+    if not live_items:
+        _current_process = None
+        _current_command = None
+        _current_model = None
+        _current_port = None
+        _current_host = None
+        return
+
+    latest = max(live_items, key=lambda item: item.get("started_at", 0))
+    _current_process = latest["process"]
+    _current_command = latest["command"]
+    _current_model = latest["model"]
+    _current_port = latest["port"]
+    _current_host = latest["host"]
+
+
+def _managed_process_snapshot() -> dict[int, dict]:
+    """获取当前存活受管进程快照"""
+    with _process_lock:
+        _sync_current_from_managed()
+        result = {}
+        for pid, item in _managed_processes.items():
+            proc = item["process"]
+            if not _is_process_running(proc):
+                continue
+            result[pid] = {
+                "pid": pid,
+                "model": item["model"],
+                "model_name": Path(item["model"]).name,
+                "host": item["host"],
+                "port": item["port"],
+                "url": f"http://{item['host']}:{item['port']}",
+                "proxy_url": f"/llama-process/{pid}/",
+                "command": " ".join(item["command"]),
+                "extra_args": item.get("extra_args", ""),
+                "gpu_indexes": item.get("gpu_indexes", []),
+                "started_at": item.get("started_at"),
+            }
+        return result
+
+
+def _parse_gpu_indexes(value) -> list[int]:
+    """解析前端传入的 GPU index 列表"""
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+    elif isinstance(value, list):
+        parts = value
+    else:
+        raise HTTPException(status_code=400, detail="GPU 选择格式错误")
+
+    result = []
+    for part in parts:
+        try:
+            index = int(part)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"GPU index 非法: {part}")
+        if index < 0:
+            raise HTTPException(status_code=400, detail=f"GPU index 非法: {part}")
+        if index not in result:
+            result.append(index)
+    return result
+
+
+def _managed_process_on_port(port: int) -> Optional[int]:
+    """返回占用端口的受管进程 PID"""
+    for pid, item in _managed_processes.items():
+        if item.get("port") == port and _is_process_running(item.get("process")):
+            return pid
+    return None
+
+
 def _collect_gpu_status() -> dict:
     """采集 GPU 和进程信息"""
+    settings = _load_settings()
+    history_hours = _get_gpu_history_hours(settings)
+    managed = _managed_process_snapshot()
     gpu_fields = [
         "index",
         "name",
@@ -321,7 +557,15 @@ def _collect_gpu_status() -> dict:
         "--format=csv,noheader,nounits",
     ])
     if gpu_error:
-        return {"ok": False, "error": gpu_error, "gpus": []}
+        history_gpus = _gpus_from_history(history_hours)
+        return {
+            "ok": bool(history_gpus),
+            "error": gpu_error,
+            "stale": bool(history_gpus),
+            "history_hours": history_hours,
+            "managed_processes": list(managed.values()),
+            "gpus": history_gpus,
+        }
 
     gpus = []
     uuid_to_gpu = {}
@@ -349,12 +593,18 @@ def _collect_gpu_status() -> dict:
         if gpu["bus_id"]:
             bus_id_to_gpu[gpu["bus_id"]] = gpu
 
+    _append_gpu_history_sample(gpus, history_hours)
+    history = _history_by_gpu(history_hours)
+    for gpu in gpus:
+        gpu["history"] = history.get(gpu["index"], [])
+
     process_fields = ["gpu_uuid", "gpu_bus_id", "pid", "used_memory", "process_name"]
     process_rows, process_error = _run_nvidia_smi([
         f"--query-compute-apps={','.join(process_fields)}",
         "--format=csv,noheader,nounits",
     ])
 
+    managed_rows = {}
     if not process_error:
         for row in process_rows or []:
             if len(row) < len(process_fields):
@@ -364,20 +614,42 @@ def _collect_gpu_status() -> dict:
                 continue
 
             pid = _to_int(row[2], default=-1)
+            if pid not in managed:
+                continue
+
             proc_detail = _get_process_detail(pid) if pid > 0 else {
                 "username": "Unknown",
                 "command": "",
                 "cmdline": [],
             }
+            managed_info = managed.get(pid, {})
             process = {
                 "pid": pid if pid > 0 else None,
                 "used_mem": _to_int(row[3]),
                 "process_name": row[4],
                 "username": proc_detail["username"],
-                "command": proc_detail["command"],
-                "model_name": _infer_model_name(proc_detail["cmdline"]),
+                "command": managed_info.get("command") or proc_detail["command"],
+                "model_name": managed_info.get("model_name") or _infer_model_name(proc_detail["cmdline"]),
+                "model": managed_info.get("model"),
+                "host": managed_info.get("host"),
+                "port": managed_info.get("port"),
+                "url": managed_info.get("url"),
+                "proxy_url": managed_info.get("proxy_url"),
+                "gpu_indexes": managed_info.get("gpu_indexes", []),
+                "started_at": managed_info.get("started_at"),
             }
             gpu["processes"].append(process)
+            managed_rows[pid] = {
+                **managed_info,
+                "gpu": gpu["index"],
+                "gpu_name": gpu["name"],
+                "gpu_util": gpu["gpu_util"],
+                "used_mem": process["used_mem"],
+                "total_mem": gpu["total_mem"],
+                "temperature": gpu["temperature"],
+                "username": process["username"],
+                "process_name": process["process_name"],
+            }
 
     for gpu in gpus:
         users = sorted({
@@ -388,7 +660,29 @@ def _collect_gpu_status() -> dict:
         gpu["process_count"] = len(gpu["processes"])
         gpu["users"] = users
 
-    return {"ok": True, "error": process_error, "gpus": gpus}
+    managed_processes = []
+    for pid, item in managed.items():
+        managed_processes.append({
+            **item,
+            "gpu": None,
+            "gpu_name": "",
+            "gpu_util": None,
+            "used_mem": None,
+            "total_mem": None,
+            "temperature": None,
+            "username": "Unknown",
+            "process_name": "",
+            **managed_rows.get(pid, {}),
+        })
+
+    return {
+        "ok": True,
+        "error": process_error,
+        "stale": False,
+        "history_hours": history_hours,
+        "managed_processes": managed_processes,
+        "gpus": gpus,
+    }
 
 
 def _build_command(settings: dict, overrides: dict) -> list:
@@ -435,33 +729,23 @@ def _kill_port_occupant(port: int, protected: list) -> Optional[dict]:
     return killed[0] if killed else None
 
 
-def _stop_process_internal() -> Optional[str]:
-    """停止当前管理的 llama-server 进程，返回停止信息或 None"""
-    global _current_process, _current_command, _current_model, _current_port, _current_host
+def _stop_one_process(item: dict) -> str:
+    """停止单个受管进程"""
+    proc = item["process"]
+    info = f"PID {proc.pid}"
+    if _is_process_running(proc):
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+    _managed_processes.pop(proc.pid, None)
+    return info
 
-    if _current_process is None or _current_process.poll() is not None:
-        _current_process = None
-        _current_command = None
-        _current_model = None
-        _current_port = None
-        _current_host = None
-        return None
 
-    info = f"PID {_current_process.pid}"
-    _current_process.terminate()
-    try:
-        _current_process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        _current_process.kill()
-        _current_process.wait(timeout=2)
-
-    _current_process = None
-    _current_command = None
-    _current_model = None
-    _current_port = None
-    _current_host = None
-
-    # 停止后清空日志文件
+def _clear_service_log():
+    """清空服务日志文件"""
     try:
         settings = _load_settings()
         log_file = settings.get("log_file", "./logs/llama-server.log")
@@ -473,7 +757,26 @@ def _stop_process_internal() -> Optional[str]:
     except OSError:
         pass
 
-    return info
+
+def _stop_process_internal(pid: Optional[int] = None, clear_log: bool = True) -> Optional[str]:
+    """停止受管 llama-server 进程，pid 为空时停止全部"""
+    _sync_current_from_managed()
+    stopped = []
+
+    if pid is not None:
+        item = _managed_processes.get(pid)
+        if item is None:
+            return None
+        stopped.append(_stop_one_process(item))
+    else:
+        for item in list(_managed_processes.values()):
+            stopped.append(_stop_one_process(item))
+
+    _sync_current_from_managed()
+    if clear_log and stopped:
+        _clear_service_log()
+
+    return ", ".join(stopped) if stopped else None
 
 
 # ── API 端点 ──────────────────────────────────────────────
@@ -533,6 +836,7 @@ async def get_models():
 async def get_status():
     """获取当前 llama-server 运行状态"""
     with _process_lock:
+        _sync_current_from_managed()
         running = (
             _current_process is not None
             and _current_process.poll() is None
@@ -541,7 +845,7 @@ async def get_status():
         if running and _current_host and _current_port:
             url = f"http://{_current_host}:{_current_port}"
 
-        return JSONResponse({
+        result = {
             "running": running,
             "pid": _current_process.pid if running else None,
             "command": " ".join(_current_command) if running and _current_command else None,
@@ -549,7 +853,10 @@ async def get_status():
             "host": _current_host if running else None,
             "port": _current_port if running else None,
             "url": url,
-        })
+        }
+
+    result["processes"] = list(_managed_process_snapshot().values())
+    return JSONResponse(result)
 
 
 @app.get("/api/gpus")
@@ -566,45 +873,54 @@ async def start_server(body: dict = None):
     if body is None:
         body = {}
 
+    settings = _load_settings()
+
+    # 合并参数
+    model = body.get("model") or settings.get("model", "")
+    host = body.get("host") or settings.get("host", "0.0.0.0")
+    port = int(body.get("port") or settings.get("port", 8080))
+    extra_args = body.get("extra_args", "")
+    incremental_start = body.get("incremental_start", True) is not False
+    gpu_indexes = _parse_gpu_indexes(body.get("gpu_indexes", []))
+
+    # 校验 extra_args
+    err = _validate_extra_args(extra_args)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    llama_server_path = settings.get("llama_server_path", "")
+    auto_kill_port = body.get("auto_kill_port", settings.get("auto_kill_port", True))
+    protected_ports = settings.get("protected_ports", [22])
+
+    # 校验 llama-server 路径
+    if not llama_server_path or not Path(llama_server_path).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"llama-server 不存在: {llama_server_path}"
+        )
+
+    # 校验模型文件
+    if not model or not Path(model).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"模型文件不存在: {model}"
+        )
+
+    killed_info = None
     with _process_lock:
-        # 如果已有进程在运行，先停止
-        if _current_process is not None and _current_process.poll() is None:
-            _stop_process_internal()
+        _sync_current_from_managed()
 
-        settings = _load_settings()
-
-        # 合并参数
-        model = body.get("model") or settings.get("model", "")
-        host = body.get("host") or settings.get("host", "0.0.0.0")
-        port = body.get("port") or settings.get("port", 8080)
-        port = int(port)
-        extra_args = body.get("extra_args", "")
-
-        # 校验 extra_args
-        err = _validate_extra_args(extra_args)
-        if err:
-            raise HTTPException(status_code=400, detail=err)
-
-        llama_server_path = settings.get("llama_server_path", "")
-        auto_kill_port = body.get("auto_kill_port", settings.get("auto_kill_port", True))
-        protected_ports = settings.get("protected_ports", [22])
-
-        # 校验 llama-server 路径
-        if not llama_server_path or not Path(llama_server_path).is_file():
-            raise HTTPException(
-                status_code=400,
-                detail=f"llama-server 不存在: {llama_server_path}"
-            )
-
-        # 校验模型文件
-        if not model or not Path(model).is_file():
-            raise HTTPException(
-                status_code=400,
-                detail=f"模型文件不存在: {model}"
-            )
+        if not incremental_start:
+            _stop_process_internal(clear_log=True)
+        else:
+            existing_pid = _managed_process_on_port(port)
+            if existing_pid is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"端口 {port} 已被受管进程 PID {existing_pid} 使用"
+                )
 
         # 处理端口占用
-        killed_info = None
         if auto_kill_port:
             killed_info = _kill_port_occupant(port, protected_ports)
 
@@ -615,7 +931,6 @@ async def start_server(body: dict = None):
             "port": port,
             "extra_args": extra_args,
         }
-
         cmd = _build_command(settings, overrides)
 
         # 准备日志目录
@@ -625,6 +940,10 @@ async def start_server(body: dict = None):
             log_path = APP_DIR / log_path
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        env = os.environ.copy()
+        if gpu_indexes:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indexes)
+
         # 启动进程
         try:
             log_fh = open(log_path, "a", encoding="utf-8")
@@ -632,6 +951,7 @@ async def start_server(body: dict = None):
                 cmd,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
+                env=env,
             )
         except Exception as e:
             raise HTTPException(
@@ -639,58 +959,90 @@ async def start_server(body: dict = None):
                 detail=f"启动失败: {str(e)}"
             )
 
+        _managed_processes[proc.pid] = {
+            "process": proc,
+            "command": cmd,
+            "model": model,
+            "host": host,
+            "port": port,
+            "extra_args": extra_args,
+            "gpu_indexes": gpu_indexes,
+            "started_at": time.time(),
+        }
+
         _current_process = proc
         _current_command = cmd
         _current_model = model
         _current_port = port
         _current_host = host
 
-        # 按模型保存启动参数
-        _save_model_param(model, port, extra_args)
+    # 按模型保存启动参数
+    _save_model_param(model, port, extra_args)
 
-        result = {
-            "ok": True,
-            "pid": proc.pid,
-            "url": f"http://{host}:{port}",
-            "command": " ".join(cmd),
-            "killed": killed_info,
-        }
-        return JSONResponse(result)
+    result = {
+        "ok": True,
+        "pid": proc.pid,
+        "url": f"http://{host}:{port}",
+        "proxy_url": f"/llama-process/{proc.pid}/",
+        "command": " ".join(cmd),
+        "gpu_indexes": gpu_indexes,
+        "incremental_start": incremental_start,
+        "killed": killed_info,
+    }
+    return JSONResponse(result)
 
 
 @app.post("/api/stop")
-async def stop_server():
+async def stop_server(body: dict = None):
     """停止 llama-server"""
+    if body is None:
+        body = {}
+    pid = body.get("pid")
+    pid = int(pid) if pid not in (None, "") else None
+
     with _process_lock:
-        info = _stop_process_internal()
+        info = _stop_process_internal(pid=pid, clear_log=(pid is None))
         if info is None:
             return JSONResponse({"ok": True, "status": "already_stopped"})
         return JSONResponse({"ok": True, "status": "stopped", "detail": f"Stopped {info}"})
 
 
 @app.post("/api/restart")
-async def restart_server():
-    """重启 llama-server（使用上一次的参数）"""
+async def restart_server(body: dict = None):
+    """重启 llama-server（使用指定 PID 或最新实例的参数）"""
+    if body is None:
+        body = {}
+    pid = body.get("pid")
+    pid = int(pid) if pid not in (None, "") else None
+
     with _process_lock:
-        # 停止当前进程
-        _stop_process_internal()
+        _sync_current_from_managed()
+        if pid is not None:
+            item = _managed_processes.get(pid)
+        else:
+            item = _managed_processes.get(_current_process.pid) if _current_process else None
 
-    # 从内存状态获取上次参数
-    if not _current_model:
-        raise HTTPException(
-            status_code=400,
-            detail="没有可重启的参数（之前未启动过）"
-        )
+        if item is None:
+            raise HTTPException(
+                status_code=400,
+                detail="没有可重启的参数（进程不存在或已停止）"
+            )
 
-    # 从 model_params 获取该模型的参数
-    params = _load_model_params()
-    model_param = params.get(_current_model, {})
+        last = {
+            "model": item["model"],
+            "host": item["host"],
+            "port": item["port"],
+            "extra_args": item.get("extra_args", ""),
+            "gpu_indexes": item.get("gpu_indexes", []),
+            "incremental_start": True,
+        }
+        _stop_process_internal(pid=item["process"].pid, clear_log=False)
+
+    # 使用原参数重新追加启动一个实例
     last = {
-        "model": _current_model,
-        "port": model_param.get("port", 8083),
-        "extra_args": model_param.get("extra_args", ""),
+        **last,
+        **{k: v for k, v in body.items() if k in {"port", "extra_args", "gpu_indexes"}},
     }
-
     return await start_server(last)
 
 
@@ -883,6 +1235,73 @@ async def get_download_logs():
         return JSONResponse({"logs": "\n".join(lines[-100:])})
     except Exception as e:
         return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
+
+
+async def _proxy_request_to_base(base_url: str, path: str, request: Request):
+    """将请求转发到指定 llama-server 基地址"""
+    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    body = await request.body()
+    accept = request.headers.get("accept", "")
+    need_stream = "text/event-stream" in accept
+
+    if need_stream:
+        async def stream_response():
+            async with httpx.AsyncClient(
+                base_url=base_url,
+                timeout=httpx.Timeout(300.0, connect=5.0),
+            ) as client:
+                async with client.stream(
+                    method=request.method,
+                    url=f"/{path}",
+                    headers=headers,
+                    content=body if body else None,
+                    params=request.query_params,
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+
+        return StreamingResponse(
+            stream_response(),
+            status_code=200,
+            media_type="text/event-stream",
+        )
+
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        timeout=httpx.Timeout(300.0, connect=5.0),
+    ) as client:
+        resp = await client.request(
+            method=request.method,
+            url=f"/{path}",
+            headers=headers,
+            content=body if body else None,
+            params=request.query_params,
+        )
+    excluded = {"content-length", "content-encoding", "transfer-encoding"}
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers={k: v for k, v in resp.headers.items() if k.lower() not in excluded},
+    )
+
+
+@app.api_route("/llama-process/{pid}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/llama-process/{pid}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_managed_llama(pid: int, request: Request, path: str = ""):
+    """按 PID 反向代理到受管 llama-server 实例"""
+    with _process_lock:
+        _sync_current_from_managed()
+        item = _managed_processes.get(pid)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"受管进程不存在: {pid}")
+        base_url = f"http://127.0.0.1:{item['port']}"
+
+    try:
+        return await _proxy_request_to_base(base_url, path, request)
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="llama-server 未运行或无法连接")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
 
 
 # ── 反向代理 llama-server ──────────────────────────────

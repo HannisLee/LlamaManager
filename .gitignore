@@ -1,5 +1,7 @@
+gpu_history.json
 __pycache__/
 *.pyc
 .venv/
 logs/*.log
+logs/
 .claude/

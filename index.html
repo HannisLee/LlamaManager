@@ -217,6 +217,44 @@
             color: #ffb066;
             font-size: 0.9em;
         }
+        .gpu-wave-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .gpu-wave-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .gpu-wave-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .gpu-wave-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .gpu-wave-card {
+            background: #0f1629;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            padding: 10px;
+            min-width: 0;
+        }
+        .gpu-wave-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            color: #dbe6f3;
+            font-size: 0.9em;
+            margin-bottom: 6px;
+        }
+        .gpu-wave-title span {
+            color: #8fa1bd;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .gpu-wave-canvas {
+            width: 100%;
+            height: 150px;
+            display: block;
+            background: #10161d;
+            border: 1px solid #263247;
+            border-radius: 4px;
+        }
         .gpu-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -331,6 +369,10 @@
 
         @media (max-width: 760px) {
             .container { padding: 12px; }
+            .gpu-wave-grid,
+            .gpu-wave-grid.cols-2,
+            .gpu-wave-grid.cols-3,
+            .gpu-wave-grid.cols-4,
             .gpu-grid,
             .gpu-grid.cols-2,
             .gpu-grid.cols-3,
@@ -351,30 +393,6 @@
 <div class="container">
     <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> LlamaManager</h1>
 
-    <!-- 第一块：状态 -->
-    <div class="card">
-        <h2>状态</h2>
-        <div>
-            <span id="status-badge" class="badge badge-stopped">Stopped</span>
-        </div>
-        <dl class="status-info">
-            <dt>PID</dt>
-            <dd id="status-pid">-</dd>
-            <dt>模型</dt>
-            <dd id="status-model">-</dd>
-            <dt>URL</dt>
-            <dd id="status-url">-</dd>
-            <dt>命令</dt>
-            <dd id="status-command">-</dd>
-        </dl>
-        <div class="btn-group">
-            <button class="btn-secondary" onclick="loadStatus()">Refresh</button>
-            <button class="btn-primary" id="btn-open" onclick="openWebUI()" disabled>Open WebUI</button>
-            <button class="btn-danger" id="btn-stop" onclick="stopServer()" disabled>Stop</button>
-            <button class="btn-warning" id="btn-restart" onclick="restartServer()" disabled>Restart</button>
-        </div>
-    </div>
-
     <!-- GPU 监控 -->
     <div class="card">
         <div class="card-header-row">
@@ -390,6 +408,9 @@
             </label>
         </div>
         <div id="gpu-error" class="gpu-error"></div>
+        <div id="gpu-wave-grid" class="gpu-wave-grid">
+            <div class="gpu-empty">正在加载 GPU 波形...</div>
+        </div>
         <div id="gpu-grid" class="gpu-grid">
             <div class="gpu-empty">正在加载 GPU 状态...</div>
         </div>
@@ -405,10 +426,11 @@
                         <th>Total Mem</th>
                         <th>Temp</th>
                         <th>Model Name</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="gpu-process-body">
-                    <tr><td colspan="8" class="gpu-empty">暂无进程</td></tr>
+                    <tr><td colspan="9" class="gpu-empty">暂无受管进程</td></tr>
                 </tbody>
             </table>
         </div>
@@ -432,6 +454,16 @@
             <div class="full-width checkbox-row">
                 <input type="checkbox" id="start-auto-kill" checked>
                 <label for="start-auto-kill">端口被占用时自动 kill 占用进程</label>
+            </div>
+
+            <div class="full-width checkbox-row">
+                <input type="checkbox" id="start-incremental" checked>
+                <label for="start-incremental">增量启动（不停止已有受管实例）</label>
+            </div>
+
+            <label>选择 GPU</label>
+            <div id="start-gpu-list" style="display:flex; gap:10px; flex-wrap:wrap; color:#aaa; font-size:0.9em;">
+                <span style="color:#888;">自动使用全部可见 GPU</span>
             </div>
         </div>
         <div class="btn-group" style="margin-top:12px">
@@ -497,6 +529,8 @@
             <input type="text" id="set-server-path" placeholder="/path/to/llama-server">
             <label for="set-model-dir">模型目录</label>
             <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
+            <label for="set-gpu-history-hours">GPU 历史小时数</label>
+            <input type="number" id="set-gpu-history-hours" min="0.25" max="168" step="0.25" value="2">
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -508,8 +542,7 @@
 <script>
 // ── 全局状态 ──────────────────────────────────────────
 let currentSettings = {};
-let statusInterval = null;
-let logInterval = null;
+let currentGpuIndexes = [];
 
 // ── 工具函数 ──────────────────────────────────────────
 
@@ -528,9 +561,15 @@ function clampPercent(value) {
 }
 
 function formatMem(value) {
+    if (value === null || value === undefined || value === "") return "-";
     const n = Number(value) || 0;
     if (n >= 1024) return `${(n / 1024).toFixed(1)} GB`;
     return `${n} MB`;
+}
+
+function formatClock(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function showError(msg) {
@@ -565,6 +604,7 @@ async function loadSettings() {
     document.getElementById("set-model-dir").value = currentSettings.model_dir || "";
     document.getElementById("start-port").value = currentSettings.port || 8080;
     document.getElementById("start-auto-kill").checked = currentSettings.auto_kill_port !== false;
+    document.getElementById("set-gpu-history-hours").value = currentSettings.gpu_history_hours || 2;
     return currentSettings;
 }
 
@@ -596,8 +636,10 @@ async function saveSettings() {
         host: "0.0.0.0",
         port: parseInt(document.getElementById("start-port").value) || 8080,
         auto_kill_port: document.getElementById("start-auto-kill").checked,
+        gpu_history_hours: parseFloat(document.getElementById("set-gpu-history-hours").value) || 2,
     };
     await api("POST", "/api/settings", data);
+    loadGpuStatus();
     alert("设置已保存");
 }
 
@@ -629,49 +671,6 @@ async function loadModels() {
     }
 }
 
-// ── 状态 ──────────────────────────────────────────────
-
-async function loadStatus() {
-    try {
-        const data = await api("GET", "/api/status");
-        updateStatusUI(data);
-    } catch (e) {
-        // 静默处理
-    }
-}
-
-function updateStatusUI(data) {
-    const badge = document.getElementById("status-badge");
-    const btnStop = document.getElementById("btn-stop");
-    const btnRestart = document.getElementById("btn-restart");
-    const btnOpen = document.getElementById("btn-open");
-    const btnStart = document.getElementById("btn-start");
-
-    if (data.running) {
-        badge.textContent = "Running";
-        badge.className = "badge badge-running";
-        document.getElementById("status-pid").textContent = data.pid || "-";
-        document.getElementById("status-model").textContent = data.model ? data.model.split("/").pop() : "-";
-        document.getElementById("status-url").textContent = data.url || "-";
-        document.getElementById("status-command").textContent = data.command || "-";
-        btnStop.disabled = false;
-        btnRestart.disabled = false;
-        btnOpen.disabled = false;
-        btnStart.disabled = true;
-    } else {
-        badge.textContent = "Stopped";
-        badge.className = "badge badge-stopped";
-        document.getElementById("status-pid").textContent = "-";
-        document.getElementById("status-model").textContent = "-";
-        document.getElementById("status-url").textContent = "-";
-        document.getElementById("status-command").textContent = "-";
-        btnStop.disabled = true;
-        btnRestart.disabled = true;
-        btnOpen.disabled = true;
-        btnStart.disabled = false;
-    }
-}
-
 // ── GPU 监控 ──────────────────────────────────────────
 
 function initGpuCardsPerRow() {
@@ -689,9 +688,12 @@ function setGpuCardsPerRow() {
 
 function applyGpuGridColumns(value) {
     const grid = document.getElementById("gpu-grid");
+    const waveGrid = document.getElementById("gpu-wave-grid");
     grid.className = "gpu-grid";
+    waveGrid.className = "gpu-wave-grid";
     if (["2", "3", "4"].includes(value)) {
         grid.classList.add(`cols-${value}`);
+        waveGrid.classList.add(`cols-${value}`);
     }
 }
 
@@ -706,12 +708,18 @@ async function loadGpuStatus() {
 
 function updateGpuUI(data) {
     const errorBox = document.getElementById("gpu-error");
+    const waveGrid = document.getElementById("gpu-wave-grid");
     const grid = document.getElementById("gpu-grid");
     const tbody = document.getElementById("gpu-process-body");
     const gpus = Array.isArray(data.gpus) ? data.gpus : [];
+    const managedProcesses = Array.isArray(data.managed_processes) ? data.managed_processes : [];
+    const historyHours = Number(data.history_hours || currentSettings.gpu_history_hours || 2);
+
+    currentGpuIndexes = gpus.map(gpu => Number(gpu.index));
+    updateStartGpuList(gpus);
 
     if (data.error) {
-        errorBox.textContent = data.error;
+        errorBox.textContent = data.stale ? `当前 GPU 状态不可用，正在显示本地历史波形: ${data.error}` : data.error;
         errorBox.style.display = "block";
     } else {
         errorBox.textContent = "";
@@ -719,24 +727,35 @@ function updateGpuUI(data) {
     }
 
     if (gpus.length === 0) {
+        waveGrid.innerHTML = `<div class="gpu-empty">${data.ok === false ? "暂无可用 GPU 波形数据" : "未检测到 GPU"}</div>`;
         grid.innerHTML = `<div class="gpu-empty">${data.ok === false ? "暂无可用 GPU 数据" : "未检测到 GPU"}</div>`;
     } else {
+        waveGrid.innerHTML = gpus.map(gpu => `
+            <div class="gpu-wave-card">
+                <div class="gpu-wave-title">
+                    <strong>GPU ${escapeHtml(gpu.index)}</strong>
+                    <span title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name || "Unknown")}</span>
+                </div>
+                <canvas class="gpu-wave-canvas" data-gpu-index="${escapeHtml(gpu.index)}"></canvas>
+            </div>
+        `).join("");
+        drawGpuWaveforms(gpus, historyHours);
+
         grid.innerHTML = gpus.map(gpu => {
             const util = clampPercent(gpu.gpu_util);
-            const usedMem = Number(gpu.used_mem) || 0;
-            const totalMem = Number(gpu.total_mem) || 0;
-            const memText = `${formatMem(usedMem)} / ${formatMem(totalMem)}`;
+            const hasMem = gpu.used_mem !== null && gpu.used_mem !== undefined && gpu.total_mem !== null && gpu.total_mem !== undefined;
+            const memText = hasMem ? `${formatMem(gpu.used_mem)} / ${formatMem(gpu.total_mem)}` : "-";
             const users = Array.isArray(gpu.users) && gpu.users.length > 0 ? gpu.users.join(", ") : "None";
             return `
                 <div class="gpu-card">
                     <div class="gpu-card-title">
-                        <strong>GPU ${escapeHtml(gpu.index)}</strong>
+                        <strong>GPU ${escapeHtml(gpu.index)}${gpu.stale ? " · History" : ""}</strong>
                         <span title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name || "Unknown")}</span>
                     </div>
                     <div class="gpu-metrics">
                         <div class="gpu-metric"><label>Util</label><span>${util}%</span></div>
                         <div class="gpu-metric"><label>Memory</label><span title="${escapeHtml(memText)}">${escapeHtml(memText)}</span></div>
-                        <div class="gpu-metric"><label>Temp</label><span>${escapeHtml(gpu.temperature ?? "-")} °C</span></div>
+                        <div class="gpu-metric"><label>Temp</label><span>${gpu.temperature === null || gpu.temperature === undefined ? "-" : escapeHtml(gpu.temperature) + " °C"}</span></div>
                         <div class="gpu-metric"><label>Processes</label><span>${escapeHtml(gpu.process_count ?? 0)}</span></div>
                         <div class="gpu-metric"><label>Users</label><span title="${escapeHtml(users)}">${escapeHtml(users)}</span></div>
                         <div class="gpu-metric"><label>Driver</label><span title="${escapeHtml(gpu.driver_version)}">${escapeHtml(gpu.driver_version || "-")}</span></div>
@@ -749,31 +768,140 @@ function updateGpuUI(data) {
         }).join("");
     }
 
-    const rows = [];
-    gpus.forEach(gpu => {
-        const processes = Array.isArray(gpu.processes) ? gpu.processes : [];
-        processes.forEach(proc => {
-            rows.push({ gpu, proc });
-        });
-    });
-
-    if (rows.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="gpu-empty">暂无 GPU 进程</td></tr>`;
+    if (managedProcesses.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="gpu-empty">暂无受管进程</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = rows.map(({ gpu, proc }) => `
+    tbody.innerHTML = managedProcesses.map(proc => `
         <tr>
-            <td>${escapeHtml(gpu.index)}</td>
-            <td title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name || "Unknown")}</td>
-            <td>${clampPercent(gpu.gpu_util)}%</td>
+            <td>${escapeHtml(proc.gpu ?? "-")}</td>
+            <td title="${escapeHtml(proc.gpu_name || "")}">${escapeHtml(proc.gpu_name || "-")}</td>
+            <td>${proc.gpu_util === null || proc.gpu_util === undefined ? "-" : clampPercent(proc.gpu_util) + "%"}</td>
             <td>${escapeHtml(proc.pid ?? "-")}</td>
             <td>${escapeHtml(formatMem(proc.used_mem))}</td>
-            <td>${escapeHtml(formatMem(gpu.total_mem))}</td>
-            <td>${escapeHtml(gpu.temperature ?? "-")} °C</td>
+            <td>${escapeHtml(formatMem(proc.total_mem))}</td>
+            <td>${proc.temperature === null || proc.temperature === undefined ? "-" : escapeHtml(proc.temperature) + " °C"}</td>
             <td title="${escapeHtml(proc.command || "")}">${escapeHtml(proc.model_name || "Unknown")}</td>
+            <td>
+                <button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>
+                <button class="btn-danger" onclick="stopManagedProcess(${Number(proc.pid)})">Stop</button>
+                <button class="btn-warning" onclick="restartManagedProcess(${Number(proc.pid)})">Restart</button>
+            </td>
         </tr>
     `).join("");
+}
+
+function updateStartGpuList(gpus) {
+    const wrap = document.getElementById("start-gpu-list");
+    const checked = new Set(
+        Array.from(wrap.querySelectorAll("input[type='checkbox']:checked")).map(input => input.value)
+    );
+    if (!gpus.length) {
+        wrap.innerHTML = `<span style="color:#888;">未检测到 GPU，不设置 CUDA_VISIBLE_DEVICES</span>`;
+        return;
+    }
+    wrap.innerHTML = gpus.map(gpu => {
+        const value = String(gpu.index);
+        const isChecked = checked.has(value) ? "checked" : "";
+        return `
+            <label class="checkbox-row" style="margin-top:0;">
+                <input type="checkbox" class="start-gpu" value="${escapeHtml(value)}" ${isChecked}>
+                <span>GPU ${escapeHtml(gpu.index)}</span>
+            </label>
+        `;
+    }).join("");
+}
+
+function selectedGpuIndexes() {
+    return Array.from(document.querySelectorAll(".start-gpu:checked"))
+        .map(input => parseInt(input.value))
+        .filter(n => Number.isInteger(n) && n >= 0);
+}
+
+function drawGpuWaveforms(gpus, historyHours) {
+    const now = Date.now() / 1000;
+    const startTs = now - historyHours * 3600;
+    gpus.forEach(gpu => {
+        const canvas = document.querySelector(`canvas[data-gpu-index="${gpu.index}"]`);
+        if (!canvas) return;
+        drawGpuWaveform(canvas, gpu, startTs, now);
+    });
+}
+
+function drawGpuWaveform(canvas, gpu, startTs, endTs) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#10161d";
+    ctx.fillRect(0, 0, width, height);
+
+    const left = 44 * dpr;
+    const right = 10 * dpr;
+    const top = 10 * dpr;
+    const bottom = 26 * dpr;
+    const plotW = width - left - right;
+    const plotH = height - top - bottom;
+
+    ctx.font = `${11 * dpr}px SF Mono, Consolas, monospace`;
+    ctx.textBaseline = "middle";
+    ctx.strokeStyle = "#263247";
+    ctx.fillStyle = "#8fa1bd";
+    ctx.lineWidth = 1 * dpr;
+
+    [0, 50, 100].forEach(value => {
+        const y = top + plotH - (value / 100) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(width - right, y);
+        ctx.stroke();
+        ctx.fillText(String(value), 8 * dpr, y);
+    });
+
+    ctx.textBaseline = "top";
+    ctx.fillText(formatClock(startTs), left, height - bottom + 7 * dpr);
+    const endText = formatClock(endTs);
+    const endWidth = ctx.measureText(endText).width;
+    ctx.fillText(endText, width - right - endWidth, height - bottom + 7 * dpr);
+
+    const history = Array.isArray(gpu.history) ? gpu.history : [];
+    const points = history
+        .filter(p => p.timestamp >= startTs && p.timestamp <= endTs)
+        .map(p => ({
+            x: left + ((p.timestamp - startTs) / (endTs - startTs)) * plotW,
+            y: top + plotH - (clampPercent(p.gpu_util) / 100) * plotH,
+        }));
+
+    if (points.length === 0) {
+        ctx.fillStyle = "#6f7d92";
+        ctx.textAlign = "center";
+        ctx.fillText("等待采样", left + plotW / 2, top + plotH / 2);
+        ctx.textAlign = "left";
+        return;
+    }
+
+    ctx.strokeStyle = "#52d273";
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    points.forEach((point, i) => {
+        if (i === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+
+    const last = points[points.length - 1];
+    ctx.fillStyle = "#6be675";
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 3 * dpr, 0, Math.PI * 2);
+    ctx.fill();
 }
 
 // ── 启动 / 停止 / 重启 ───────────────────────────────
@@ -785,11 +913,13 @@ async function startServer() {
         port: parseInt(document.getElementById("start-port").value) || 8080,
         extra_args: document.getElementById("start-extra").value,
         auto_kill_port: document.getElementById("start-auto-kill").checked,
+        incremental_start: document.getElementById("start-incremental").checked,
+        gpu_indexes: selectedGpuIndexes(),
     };
 
     try {
-        const result = await api("POST", "/api/start", body);
-        loadStatus();
+        await api("POST", "/api/start", body);
+        loadGpuStatus();
         loadLogs();
     } catch (e) {}
 }
@@ -798,20 +928,40 @@ async function stopServer() {
     try {
         await api("POST", "/api/stop");
         document.getElementById("log-area").value = "";
-        loadStatus();
+        loadGpuStatus();
     } catch (e) {}
 }
 
 async function restartServer() {
     try {
         await api("POST", "/api/restart");
-        loadStatus();
+        loadGpuStatus();
         loadLogs();
     } catch (e) {}
 }
 
 function openWebUI() {
     window.open("/llama/", "_blank");
+}
+
+function openManagedWebUI(pid) {
+    window.open(`/llama-process/${pid}/`, "_blank");
+}
+
+async function stopManagedProcess(pid) {
+    try {
+        await api("POST", "/api/stop", { pid });
+        loadGpuStatus();
+        loadLogs();
+    } catch (e) {}
+}
+
+async function restartManagedProcess(pid) {
+    try {
+        await api("POST", "/api/restart", { pid });
+        loadGpuStatus();
+        loadLogs();
+    } catch (e) {}
 }
 
 // ── 日志 ──────────────────────────────────────────────
@@ -924,14 +1074,12 @@ async function loadDownloadLogs() {
 document.addEventListener("DOMContentLoaded", () => {
     initGpuCardsPerRow();
     loadSettings().then(() => loadModels()).then(() => loadModelParams());
-    loadStatus();
     loadGpuStatus();
     loadLogs();
     loadDownloadLogs();
 
     // 自动刷新
-    setInterval(loadStatus, 3000);
-    setInterval(loadGpuStatus, 3000);
+    setInterval(loadGpuStatus, 5000);
     setInterval(loadLogs, 5000);
     setInterval(loadDownloadStatus, 3000);
     setInterval(loadDownloadLogs, 5000);

@@ -24,6 +24,7 @@ LlamaManager/
 ├── index.html          # 单页面 WebUI
 ├── settings.json       # 持久化配置
 ├── model_params.json   # 按模型存储的启动参数（自动生成）
+├── gpu_history.json    # GPU util 历史采样（自动生成，git 忽略）
 ├── requirements.txt    # Python 依赖
 ├── run.sh              # 启动脚本
 ├── logs/               # 日志目录
@@ -44,12 +45,22 @@ LlamaManager/
 **llama-server 进程状态：**
 
 ```python
-_current_process   # subprocess.Popen 实例
-_current_command   # 启动命令列表
-_current_model     # 当前模型路径
-_current_port      # 当前端口
-_current_host      # 当前绑定地址
-_process_lock      # 进程操作互斥锁
+_managed_processes  # {pid: {process, command, model, host, port, gpu_indexes, started_at}}
+_current_process    # 最新存活 subprocess.Popen 实例，兼容旧状态接口
+_current_command    # 最新实例启动命令列表
+_current_model      # 最新实例模型路径
+_current_port       # 最新实例端口
+_current_host       # 最新实例绑定地址
+_process_lock       # 进程操作互斥锁
+```
+
+**GPU 历史状态：**
+
+```python
+GPU_HISTORY_PATH             # gpu_history.json 本地历史文件
+_gpu_history_lock            # 历史文件读写锁
+_last_gpu_sample_ts          # 上次写入采样时间
+GPU_SAMPLE_INTERVAL_SECONDS  # 采样最小间隔，当前为 5 秒
 ```
 
 **下载任务状态：**
@@ -82,9 +93,12 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | `_save_model_param(model, port, extra_args)` | 保存单个模型的启动参数 |
 | `_collect_gpu_status()` | 调用 nvidia-smi 采集 GPU 与进程信息 |
 | `_infer_model_name(cmdline)` | 从进程命令行推断模型名 |
+| `_append_gpu_history_sample(gpus, history_hours)` | 将 GPU util 采样写入 gpu_history.json |
+| `_history_by_gpu(history_hours)` | 按 GPU index 读取最近 X 小时历史 |
+| `_managed_process_snapshot()` | 获取当前存活受管实例快照 |
 | `_build_command(settings, overrides)` | 拼接 llama-server 启动命令 |
 | `_kill_port_occupant(port, protected)` | 杀掉占用端口的进程（跳过受保护端口和 PID 1） |
-| `_stop_process_internal()` | 停止当前 llama-server 进程（terminate → wait 3s → kill） |
+| `_stop_process_internal(pid, clear_log)` | 停止指定或全部受管 llama-server 进程 |
 
 ### API 端点
 
@@ -96,16 +110,17 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | POST | `/api/settings` | 保存配置 |
 | GET | `/api/models` | 递归扫描 model_dir 下 .gguf 文件 |
 | GET | `/api/status` | 当前 llama-server 进程状态 |
-| GET | `/api/gpus` | 当前 GPU 状态和 GPU 进程列表 |
-| POST | `/api/start` | 启动 llama-server |
-| POST | `/api/stop` | 停止 llama-server（同时清空日志） |
-| POST | `/api/restart` | 使用该模型上次参数重启 |
+| GET | `/api/gpus` | 当前 GPU 状态、每卡 util 历史和受管进程列表 |
+| POST | `/api/start` | 启动 llama-server，支持增量启动和 GPU 选择 |
+| POST | `/api/stop` | 停止指定 PID 或全部受管实例 |
+| POST | `/api/restart` | 重启指定 PID 或最新受管实例 |
 | GET | `/api/model-params` | 获取所有模型的启动参数 |
 | GET | `/api/logs` | 读取日志尾部 100 行 |
 | POST | `/api/download` | 从 Hugging Face 下载模型（支持 `force_download`） |
 | GET | `/api/download/status` | 查询下载状态（含进度信息） |
 | GET | `/api/download/logs` | 读取下载日志尾部 100 行 |
 | POST | `/api/download/cancel` | 取消下载 |
+| GET/POST/... | `/llama-process/{pid}/{path}` | 反向代理到指定受管 llama-server |
 | GET/POST/... | `/llama/{path}` | 反向代理到 llama-server |
 
 ### `/api/gpus` 返回结构
@@ -114,6 +129,18 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 {
   "ok": true,
   "error": null,
+  "history_hours": 2,
+  "managed_processes": [
+    {
+      "pid": 12345,
+      "model_name": "Qwen3-ASR-1.7B.gguf",
+      "port": 8083,
+      "gpu_indexes": [0],
+      "proxy_url": "/llama-process/12345/",
+      "gpu": 0,
+      "used_mem": 6326
+    }
+  ],
   "gpus": [
     {
       "index": 0,
@@ -127,6 +154,9 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
       "temperature": 51,
       "process_count": 1,
       "users": ["user"],
+      "history": [
+        {"timestamp": 1717480000.0, "gpu_util": 20}
+      ],
       "processes": [
         {
           "pid": 12345,
@@ -148,10 +178,12 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 1. 读取 settings.json 合并请求参数
 2. 校验 extra_args（shlex 解析 + 危险字符过滤）
 3. 校验 llama-server 二进制和模型文件存在
-4. 检查端口占用 → auto_kill_port 时自动 kill
-5. 拼接命令：`llama-server -m <model> --host 0.0.0.0 --port <port> <extra_args>`
-6. subprocess.Popen 启动，stdout/stderr 重定向到日志文件
-7. 按模型保存启动参数到 model_params.json
+4. 读取 `incremental_start`：为 false 时先停止全部受管实例，为 true 时追加启动新实例
+5. 读取 `gpu_indexes`：非空时设置 `CUDA_VISIBLE_DEVICES=0,1`
+6. 检查端口占用 → auto_kill_port 时自动 kill；增量启动时禁止复用已受管端口
+7. 拼接命令：`llama-server -m <model> --host 0.0.0.0 --port <port> <extra_args>`
+8. subprocess.Popen 启动，stdout/stderr 重定向到日志文件
+9. 写入 `_managed_processes[pid]`，按模型保存启动参数到 model_params.json
 
 **下载模型：**
 1. 校验仓库名（`owner/repo`）和文件名（`.gguf` 结尾）
@@ -162,16 +194,19 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 6. 前端轮询 `/api/download/status` 获取进度和百分比
 
 **停止服务：**
-1. terminate 进程 → 等待 3 秒 → kill
-2. 清空服务日志文件（截断为空）
+1. 表格行 Stop 传入 PID，只停止对应受管实例，不清空日志
+2. 不传 PID 时停止全部受管实例，并清空服务日志文件
+3. terminate 进程 → 等待 3 秒 → kill
 
 **GPU 监控：**
 1. 调用 `nvidia-smi --query-gpu=index,name,driver_version,uuid,pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits`
 2. 调用 `nvidia-smi --query-compute-apps=gpu_uuid,gpu_bus_id,pid,used_memory,process_name --format=csv,noheader,nounits`
 3. 进程归属优先按 `gpu_uuid` 映射到 GPU，失败时按 `gpu_bus_id` 映射；仍无法映射的进程行会被忽略
-4. 使用 `psutil.Process(pid)` 补充 `username` 和完整命令行，权限不足或进程退出时使用 `Unknown` / 空字符串兜底
-5. 从命令行参数 `--model`、`-m`、`--model-path`、`--model_name`、`--model-name`、`.gguf` 路径和常见模型目录名推断 `model_name`
-6. `nvidia-smi` 不存在、驱动不可用或查询超时时，接口返回 JSON：`{"ok": false, "error": "...", "gpus": []}`
+4. GPU 进程表只保留 `_managed_processes` 中仍存活的 PID，系统或其他用户进程不进入前端进程表
+5. 每次 `/api/gpus` 采集时最多每 5 秒写入一条 GPU util 样本到 `gpu_history.json`
+6. 按 `settings.json.gpu_history_hours` 返回每张 GPU 最近 X 小时的 `history`，默认 2 小时
+7. `nvidia-smi` 不存在、驱动不可用或查询超时时，优先从 `gpu_history.json` 恢复 GPU 列表和波形，返回 `stale: true`
+8. 本地历史也为空时，接口返回 JSON：`{"ok": false, "error": "...", "gpus": []}`
 
 **端口冲突处理：**
 - 使用 `psutil.net_connections(kind="inet")` 查找 LISTEN 状态连接
@@ -183,23 +218,30 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 
 ### 页面布局
 
-单页面，暗色主题，max-width 1200px 居中。七个卡片区块纵向排列：
+单页面，暗色主题，max-width 1200px 居中。六个卡片区块纵向排列：
 
-1. **状态区** — 运行状态徽章、PID、模型、URL、命令、操作按钮
-2. **GPU 监控区** — 多 GPU 卡片、每排卡片数设置、GPU 进程表
-3. **启动区** — 模型下拉（切换时自动加载该模型上次参数）、Port、Extra Args、auto_kill 开关、Start 按钮
-4. **服务日志** — Refresh 按钮、readonly textarea
-5. **下载区** — HF 仓库ID、文件名、Download/Cancel 按钮、状态徽章、进度条、强制重新下载复选框
-6. **下载日志** — Refresh 按钮、readonly textarea
-7. **设置区** — llama-server 路径、模型目录、Save/Rescan 按钮
+1. **GPU 监控区** — 每张 GPU 的 util 波形图、多 GPU 卡片、受管进程表
+2. **启动区** — 模型下拉、Port、Extra Args、auto_kill、增量启动、GPU 选择、Start 按钮
+3. **服务日志** — Refresh 按钮、readonly textarea
+4. **下载区** — HF 仓库ID、文件名、Download/Cancel 按钮、状态徽章、进度条、强制重新下载复选框
+5. **下载日志** — Refresh 按钮、readonly textarea
+6. **设置区** — llama-server 路径、模型目录、GPU 历史小时数、Save/Rescan 按钮
 
 GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
 - `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`
 - `2 / 3 / 4`：固定每排 GPU 卡片数
+- 页面最大宽度限制为 1200px，因此每排最多 4 张 GPU；8 卡服务器显示为 2 排
 - 窄屏下自动退化为单列
 - 设置保存到 `localStorage.gpu_cards_per_row`
 
-GPU 进程表由 `gpus[].processes[]` 展平，字段为 GPU、GPU Name、GPU Util、PID、Used Mem、Total Mem、Temp、Model Name。
+GPU 波形图区位于 GPU 卡片上方：
+- 每张 GPU 单独一张 canvas 波形图
+- 左侧纵轴固定显示 0 / 50 / 100
+- 横轴显示过去 X 小时的起止时间
+- X 小时来自 `settings.json.gpu_history_hours`，默认 2
+- 当前硬件查询失败时，波形图仍可基于本地历史文件显示，并在页面顶部提示当前状态不可用
+
+GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字段为 GPU、GPU Name、GPU Util、PID、Used Mem、Total Mem、Temp、Model Name、Actions。Actions 包含 Open、Stop、Restart。
 
 ### JavaScript 架构
 
@@ -215,18 +257,17 @@ GPU 进程表由 `gpus[].processes[]` 展平，字段为 GPU、GPU Name、GPU Ut
 | `loadModels()` | 扫描模型并填充下拉框 |
 | `loadModelParams()` | 加载所有模型参数存入 `modelParams` |
 | `onModelChange()` | 模型下拉切换时自动回填 port/extra_args |
-| `loadStatus()` | 获取进程状态并更新 UI |
-| `loadGpuStatus()` | 获取 GPU 状态和进程列表并更新 UI |
+| `loadGpuStatus()` | 获取 GPU 状态、波形历史和受管进程列表并更新 UI |
+| `drawGpuWaveform()` | 绘制单张 GPU util 波形图 |
 | `startServer()` | 收集表单参数调用 /api/start |
-| `stopServer()` | 调用 /api/stop，清空日志显示 |
-| `restartServer()` | 调用 /api/restart |
+| `stopManagedProcess(pid)` | 停止指定受管实例 |
+| `restartManagedProcess(pid)` | 重启指定受管实例 |
 | `startDownload()` | 调用 /api/download（含 force_download） |
 | `cancelDownload()` | 调用 /api/download/cancel |
 | `loadDownloadStatus()` | 轮询下载状态，更新进度条和 UI |
 
 **自动刷新：**
-- 状态：每 3 秒
-- GPU 监控：每 3 秒
+- GPU 监控：每 5 秒
 - 日志：每 5 秒
 - 下载状态：每 3 秒
 - 下载完成时自动刷新模型列表
@@ -245,6 +286,24 @@ GPU 进程表由 `gpus[].processes[]` 展平，字段为 GPU、GPU Name、GPU Ut
 | `log_file` | string | `./logs/llama-server.log` | 日志文件路径 |
 | `auto_kill_port` | bool | `true` | 端口占用时自动 kill |
 | `protected_ports` | array | `[22]` | 受保护端口 |
+| `gpu_history_hours` | number | `2` | GPU util 波形显示的历史小时数 |
+
+### gpu_history.json
+
+自动生成并由 `.gitignore` 忽略，保存 GPU util 采样：
+
+```json
+{
+  "samples": [
+    {
+      "timestamp": 1717480000.0,
+      "gpus": [
+        {"index": 0, "name": "NVIDIA A100-PCIE-40GB", "gpu_util": 42}
+      ]
+    }
+  ]
+}
+```
 
 ### model_params.json
 

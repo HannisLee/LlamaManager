@@ -105,3 +105,17 @@
 - 新增 GPU 进程表，按多卡汇总展示 GPU、PID、进程显存、总显存、温度和模型名
 - `nvidia-smi` 不存在或驱动不可用时返回友好错误提示，页面不会报错
 - spec.md 同步更新 GPU 监控接口、数据结构和采集流程
+
+## v0.0.13 — 2026-06-04
+
+- GPU 监控顶部新增每卡独立 util 波形图，纵轴固定 0 / 50 / 100，横轴显示过去 X 小时
+- GPU util 历史采样保存到本地 `gpu_history.json`，前端每 5 秒刷新并驱动后端采样
+- 设置区新增 GPU 历史小时数，默认 2 小时
+- 移除独立状态卡片，将 Open / Stop / Restart 操作移动到受管进程表
+- 后端进程管理扩展为多实例 `_managed_processes`，支持增量启动多个 llama-server
+- 启动服务新增增量启动和选择 GPU，选卡通过 `CUDA_VISIBLE_DEVICES` 限制可见 GPU
+- GPU 进程表只展示 LlamaManager 启动的受管进程，不展示系统或外部进程
+- 新增按 PID 代理路径 `/llama-process/{pid}/...`，用于打开指定实例 WebUI
+- 新增 `.gitignore` 忽略本地 GPU 历史文件
+- `nvidia-smi` 不可用时，GPU 波形图改为基于本地 `gpu_history.json` 兜底展示
+- 修复 `/llama-process/{pid}/` 根路径代理，确保进程表 Open 按钮能打开指定实例
