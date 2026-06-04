@@ -95,3 +95,13 @@
 - 新增"强制重新下载"复选框（`force_download` 参数）
 - HF 默认通过 ETag 校验已有文件，未勾选时命中缓存则跳过下载
 - spec.md 架构文档全面更新同步
+
+## v0.0.12 — 2026-06-04
+
+- 新增 `/api/gpus` GPU 监控接口，基于 `nvidia-smi` 采集多 GPU 状态和 GPU 进程列表
+- GPU 进程补充 username、command，并从 `--model`、`-m`、`.gguf` 路径等参数推断 Model Name
+- 前端新增 GPU 监控区块，支持多 GPU 卡片横向展示、自动换行和绿色利用率状态条
+- 新增 Cards per row 设置，支持 Auto / 2 / 3 / 4，并通过 localStorage 保存显示偏好
+- 新增 GPU 进程表，按多卡汇总展示 GPU、PID、进程显存、总显存、温度和模型名
+- `nvidia-smi` 不存在或驱动不可用时返回友好错误提示，页面不会报错
+- spec.md 同步更新 GPU 监控接口、数据结构和采集流程

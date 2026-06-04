@@ -3,11 +3,13 @@ LlamaManager - 轻量级 llama.cpp Web 管理工具
 通过单页面 WebUI 管理 llama-server 进程
 """
 
+import csv
 import json
 import os
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -166,6 +168,227 @@ def _save_model_param(model: str, port: int, extra_args: str):
         )
     except OSError:
         pass
+
+
+def _to_int(value, default=0) -> int:
+    """将 nvidia-smi 的数值字段转为 int，N/A 或空值返回默认值"""
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text or text.upper() == "N/A":
+        return default
+    try:
+        return int(float(text))
+    except ValueError:
+        return default
+
+
+def _parse_csv_lines(output: str) -> list:
+    """解析 nvidia-smi CSV 输出"""
+    if not output.strip():
+        return []
+    return [
+        [cell.strip() for cell in row]
+        for row in csv.reader(output.splitlines(), skipinitialspace=True)
+        if row
+    ]
+
+
+def _run_nvidia_smi(args: list) -> tuple[Optional[list], Optional[str]]:
+    """执行 nvidia-smi 查询，返回 CSV 行或错误信息"""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None, "未找到 nvidia-smi，请确认已安装 NVIDIA 驱动和工具"
+
+    try:
+        proc = subprocess.run(
+            [nvidia_smi, *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "nvidia-smi 查询超时"
+    except OSError as e:
+        return None, f"nvidia-smi 执行失败: {e}"
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return None, detail or f"nvidia-smi 返回错误码 {proc.returncode}"
+
+    return _parse_csv_lines(proc.stdout), None
+
+
+def _model_name_from_value(value: str, require_model_hint: bool = False) -> Optional[str]:
+    """从模型参数值中提取可读模型名"""
+    if not value:
+        return None
+    text = value.strip().strip("'\"")
+    if not text or text.startswith("-"):
+        return None
+    if text.lower().endswith(".gguf"):
+        return Path(text).name
+    if "/" in text or "\\" in text:
+        name = Path(text).name
+        if name and (
+            not require_model_hint
+            or re.search(r"(model|gguf|llama|qwen|deepseek|mistral|mixtral|gemma|yi|hy-)", name, re.I)
+        ):
+            return name
+        return None
+    if re.search(r"(model|gguf|llama|qwen|deepseek|mistral|mixtral|gemma|yi|hy-)", text, re.I):
+        return text
+    return None
+
+
+def _infer_model_name(cmdline: list) -> str:
+    """从进程命令行推断模型名，无法识别返回 Unknown"""
+    if not cmdline:
+        return "Unknown"
+
+    tokens = [str(t) for t in cmdline if str(t).strip()]
+    model_flags = {"--model", "-m", "--model-path", "--model_name", "--model-name"}
+    model_prefixes = (
+        "--model=",
+        "--model-path=",
+        "--model_name=",
+        "--model-name=",
+    )
+
+    for i, token in enumerate(tokens):
+        for prefix in model_prefixes:
+            if token.startswith(prefix):
+                name = _model_name_from_value(token[len(prefix):])
+                if name:
+                    return name
+        if token in model_flags and i + 1 < len(tokens):
+            name = _model_name_from_value(tokens[i + 1])
+            if name:
+                return name
+
+    for token in tokens:
+        if token.lower().endswith(".gguf"):
+            return Path(token.strip("'\"")).name
+
+    for token in tokens:
+        name = _model_name_from_value(token, require_model_hint=True)
+        if name:
+            return name
+
+    return "Unknown"
+
+
+def _get_process_detail(pid: int) -> dict:
+    """读取进程用户名和命令行，权限不足时返回兜底值"""
+    detail = {
+        "username": "Unknown",
+        "command": "",
+        "cmdline": [],
+    }
+    try:
+        proc = psutil.Process(pid)
+        try:
+            detail["username"] = proc.username() or "Unknown"
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            pass
+        try:
+            cmdline = proc.cmdline()
+            detail["cmdline"] = cmdline
+            detail["command"] = shlex.join(cmdline) if cmdline else ""
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            pass
+    except (psutil.AccessDenied, psutil.NoSuchProcess, ValueError):
+        pass
+    return detail
+
+
+def _collect_gpu_status() -> dict:
+    """采集 GPU 和进程信息"""
+    gpu_fields = [
+        "index",
+        "name",
+        "driver_version",
+        "uuid",
+        "pci.bus_id",
+        "utilization.gpu",
+        "memory.used",
+        "memory.total",
+        "temperature.gpu",
+    ]
+    gpu_rows, gpu_error = _run_nvidia_smi([
+        f"--query-gpu={','.join(gpu_fields)}",
+        "--format=csv,noheader,nounits",
+    ])
+    if gpu_error:
+        return {"ok": False, "error": gpu_error, "gpus": []}
+
+    gpus = []
+    uuid_to_gpu = {}
+    bus_id_to_gpu = {}
+    for row in gpu_rows or []:
+        if len(row) < len(gpu_fields):
+            continue
+        gpu = {
+            "index": _to_int(row[0]),
+            "name": row[1],
+            "driver_version": row[2],
+            "uuid": row[3],
+            "bus_id": row[4],
+            "gpu_util": _to_int(row[5]),
+            "used_mem": _to_int(row[6]),
+            "total_mem": _to_int(row[7]),
+            "temperature": _to_int(row[8]),
+            "process_count": 0,
+            "users": [],
+            "processes": [],
+        }
+        gpus.append(gpu)
+        if gpu["uuid"]:
+            uuid_to_gpu[gpu["uuid"]] = gpu
+        if gpu["bus_id"]:
+            bus_id_to_gpu[gpu["bus_id"]] = gpu
+
+    process_fields = ["gpu_uuid", "gpu_bus_id", "pid", "used_memory", "process_name"]
+    process_rows, process_error = _run_nvidia_smi([
+        f"--query-compute-apps={','.join(process_fields)}",
+        "--format=csv,noheader,nounits",
+    ])
+
+    if not process_error:
+        for row in process_rows or []:
+            if len(row) < len(process_fields):
+                continue
+            gpu = uuid_to_gpu.get(row[0]) or bus_id_to_gpu.get(row[1])
+            if gpu is None:
+                continue
+
+            pid = _to_int(row[2], default=-1)
+            proc_detail = _get_process_detail(pid) if pid > 0 else {
+                "username": "Unknown",
+                "command": "",
+                "cmdline": [],
+            }
+            process = {
+                "pid": pid if pid > 0 else None,
+                "used_mem": _to_int(row[3]),
+                "process_name": row[4],
+                "username": proc_detail["username"],
+                "command": proc_detail["command"],
+                "model_name": _infer_model_name(proc_detail["cmdline"]),
+            }
+            gpu["processes"].append(process)
+
+    for gpu in gpus:
+        users = sorted({
+            p["username"]
+            for p in gpu["processes"]
+            if p.get("username") and p.get("username") != "Unknown"
+        })
+        gpu["process_count"] = len(gpu["processes"])
+        gpu["users"] = users
+
+    return {"ok": True, "error": process_error, "gpus": gpus}
 
 
 def _build_command(settings: dict, overrides: dict) -> list:
@@ -327,6 +550,12 @@ async def get_status():
             "port": _current_port if running else None,
             "url": url,
         })
+
+
+@app.get("/api/gpus")
+async def get_gpus():
+    """获取 GPU 状态和 GPU 进程列表"""
+    return JSONResponse(_collect_gpu_status())
 
 
 @app.post("/api/start")

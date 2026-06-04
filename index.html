@@ -16,7 +16,7 @@
         }
 
         .container {
-            max-width: 900px;
+            max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -180,6 +180,164 @@
             color: #aaa;
             font-size: 0.9em;
         }
+
+        /* GPU 监控 */
+        .card-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .card-header-row h2 {
+            margin-bottom: 0;
+        }
+        .compact-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #aaa;
+            font-size: 0.9em;
+        }
+        .compact-control select {
+            padding: 5px 8px;
+            background: #0f1629;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #e0e0e0;
+        }
+        .gpu-error {
+            display: none;
+            margin-bottom: 10px;
+            padding: 8px 10px;
+            border: 1px solid #6d3d16;
+            border-radius: 4px;
+            background: #2d2118;
+            color: #ffb066;
+            font-size: 0.9em;
+        }
+        .gpu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .gpu-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .gpu-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .gpu-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .gpu-card {
+            background: #0f1629;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+        }
+        .gpu-card-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        .gpu-card-title strong {
+            color: #fff;
+            font-size: 1em;
+        }
+        .gpu-card-title span {
+            color: #8fa1bd;
+            font-size: 0.82em;
+            word-break: break-word;
+            text-align: right;
+        }
+        .gpu-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .gpu-metric {
+            background: #0a0f1f;
+            border: 1px solid #263247;
+            border-radius: 4px;
+            padding: 7px 8px;
+            min-width: 0;
+        }
+        .gpu-metric label {
+            display: block;
+            color: #7e8da6;
+            font-size: 0.75em;
+            line-height: 1.2;
+        }
+        .gpu-metric span {
+            display: block;
+            color: #e8edf5;
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+            font-size: 0.95em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .gpu-util-bar {
+            height: 12px;
+            background: #07100c;
+            border: 1px solid #1d3f2b;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .gpu-util-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #1b8f4a, #6be675);
+            width: 0%;
+            transition: width 0.25s;
+        }
+        .gpu-empty {
+            color: #888;
+            padding: 14px 0;
+            text-align: center;
+        }
+        .table-wrap {
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            background: #0f1629;
+        }
+        .gpu-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 820px;
+            font-size: 0.88em;
+        }
+        .gpu-table th,
+        .gpu-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #263247;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .gpu-table th {
+            background: #101b32;
+            color: #8fa1bd;
+            font-weight: 600;
+        }
+        .gpu-table td {
+            color: #dde5ef;
+            font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+        }
+        .gpu-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        @media (max-width: 760px) {
+            .container { padding: 12px; }
+            .gpu-grid,
+            .gpu-grid.cols-2,
+            .gpu-grid.cols-3,
+            .gpu-grid.cols-4 {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -214,6 +372,45 @@
             <button class="btn-primary" id="btn-open" onclick="openWebUI()" disabled>Open WebUI</button>
             <button class="btn-danger" id="btn-stop" onclick="stopServer()" disabled>Stop</button>
             <button class="btn-warning" id="btn-restart" onclick="restartServer()" disabled>Restart</button>
+        </div>
+    </div>
+
+    <!-- GPU 监控 -->
+    <div class="card">
+        <div class="card-header-row">
+            <h2>GPU 监控</h2>
+            <label class="compact-control" for="gpu-cards-per-row">
+                Cards per row
+                <select id="gpu-cards-per-row" onchange="setGpuCardsPerRow()">
+                    <option value="auto">Auto</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                </select>
+            </label>
+        </div>
+        <div id="gpu-error" class="gpu-error"></div>
+        <div id="gpu-grid" class="gpu-grid">
+            <div class="gpu-empty">正在加载 GPU 状态...</div>
+        </div>
+        <div class="table-wrap">
+            <table class="gpu-table">
+                <thead>
+                    <tr>
+                        <th>GPU</th>
+                        <th>GPU Name</th>
+                        <th>GPU Util</th>
+                        <th>PID</th>
+                        <th>Used Mem</th>
+                        <th>Total Mem</th>
+                        <th>Temp</th>
+                        <th>Model Name</th>
+                    </tr>
+                </thead>
+                <tbody id="gpu-process-body">
+                    <tr><td colspan="8" class="gpu-empty">暂无进程</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -315,6 +512,26 @@ let statusInterval = null;
 let logInterval = null;
 
 // ── 工具函数 ──────────────────────────────────────────
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function clampPercent(value) {
+    const n = Number(value) || 0;
+    return Math.max(0, Math.min(100, n));
+}
+
+function formatMem(value) {
+    const n = Number(value) || 0;
+    if (n >= 1024) return `${(n / 1024).toFixed(1)} GB`;
+    return `${n} MB`;
+}
 
 function showError(msg) {
     const bar = document.getElementById("error-bar");
@@ -453,6 +670,110 @@ function updateStatusUI(data) {
         btnOpen.disabled = true;
         btnStart.disabled = false;
     }
+}
+
+// ── GPU 监控 ──────────────────────────────────────────
+
+function initGpuCardsPerRow() {
+    const saved = localStorage.getItem("gpu_cards_per_row") || "auto";
+    const select = document.getElementById("gpu-cards-per-row");
+    select.value = ["auto", "2", "3", "4"].includes(saved) ? saved : "auto";
+    applyGpuGridColumns(select.value);
+}
+
+function setGpuCardsPerRow() {
+    const value = document.getElementById("gpu-cards-per-row").value;
+    localStorage.setItem("gpu_cards_per_row", value);
+    applyGpuGridColumns(value);
+}
+
+function applyGpuGridColumns(value) {
+    const grid = document.getElementById("gpu-grid");
+    grid.className = "gpu-grid";
+    if (["2", "3", "4"].includes(value)) {
+        grid.classList.add(`cols-${value}`);
+    }
+}
+
+async function loadGpuStatus() {
+    try {
+        const data = await api("GET", "/api/gpus");
+        updateGpuUI(data);
+    } catch (e) {
+        updateGpuUI({ ok: false, error: e.message, gpus: [] });
+    }
+}
+
+function updateGpuUI(data) {
+    const errorBox = document.getElementById("gpu-error");
+    const grid = document.getElementById("gpu-grid");
+    const tbody = document.getElementById("gpu-process-body");
+    const gpus = Array.isArray(data.gpus) ? data.gpus : [];
+
+    if (data.error) {
+        errorBox.textContent = data.error;
+        errorBox.style.display = "block";
+    } else {
+        errorBox.textContent = "";
+        errorBox.style.display = "none";
+    }
+
+    if (gpus.length === 0) {
+        grid.innerHTML = `<div class="gpu-empty">${data.ok === false ? "暂无可用 GPU 数据" : "未检测到 GPU"}</div>`;
+    } else {
+        grid.innerHTML = gpus.map(gpu => {
+            const util = clampPercent(gpu.gpu_util);
+            const usedMem = Number(gpu.used_mem) || 0;
+            const totalMem = Number(gpu.total_mem) || 0;
+            const memText = `${formatMem(usedMem)} / ${formatMem(totalMem)}`;
+            const users = Array.isArray(gpu.users) && gpu.users.length > 0 ? gpu.users.join(", ") : "None";
+            return `
+                <div class="gpu-card">
+                    <div class="gpu-card-title">
+                        <strong>GPU ${escapeHtml(gpu.index)}</strong>
+                        <span title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name || "Unknown")}</span>
+                    </div>
+                    <div class="gpu-metrics">
+                        <div class="gpu-metric"><label>Util</label><span>${util}%</span></div>
+                        <div class="gpu-metric"><label>Memory</label><span title="${escapeHtml(memText)}">${escapeHtml(memText)}</span></div>
+                        <div class="gpu-metric"><label>Temp</label><span>${escapeHtml(gpu.temperature ?? "-")} °C</span></div>
+                        <div class="gpu-metric"><label>Processes</label><span>${escapeHtml(gpu.process_count ?? 0)}</span></div>
+                        <div class="gpu-metric"><label>Users</label><span title="${escapeHtml(users)}">${escapeHtml(users)}</span></div>
+                        <div class="gpu-metric"><label>Driver</label><span title="${escapeHtml(gpu.driver_version)}">${escapeHtml(gpu.driver_version || "-")}</span></div>
+                    </div>
+                    <div class="gpu-util-bar" title="GPU Util ${util}%">
+                        <div class="gpu-util-fill" style="width:${util}%"></div>
+                    </div>
+                </div>
+            `;
+        }).join("");
+    }
+
+    const rows = [];
+    gpus.forEach(gpu => {
+        const processes = Array.isArray(gpu.processes) ? gpu.processes : [];
+        processes.forEach(proc => {
+            rows.push({ gpu, proc });
+        });
+    });
+
+    if (rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="gpu-empty">暂无 GPU 进程</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = rows.map(({ gpu, proc }) => `
+        <tr>
+            <td>${escapeHtml(gpu.index)}</td>
+            <td title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name || "Unknown")}</td>
+            <td>${clampPercent(gpu.gpu_util)}%</td>
+            <td>${escapeHtml(proc.pid ?? "-")}</td>
+            <td>${escapeHtml(formatMem(proc.used_mem))}</td>
+            <td>${escapeHtml(formatMem(gpu.total_mem))}</td>
+            <td>${escapeHtml(gpu.temperature ?? "-")} °C</td>
+            <td title="${escapeHtml(proc.command || "")}">${escapeHtml(proc.model_name || "Unknown")}</td>
+        </tr>
+    `).join("");
 }
 
 // ── 启动 / 停止 / 重启 ───────────────────────────────
@@ -601,13 +922,16 @@ async function loadDownloadLogs() {
 // ── 初始化 ────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
+    initGpuCardsPerRow();
     loadSettings().then(() => loadModels()).then(() => loadModelParams());
     loadStatus();
+    loadGpuStatus();
     loadLogs();
     loadDownloadLogs();
 
     // 自动刷新
     setInterval(loadStatus, 3000);
+    setInterval(loadGpuStatus, 3000);
     setInterval(loadLogs, 5000);
     setInterval(loadDownloadStatus, 3000);
     setInterval(loadDownloadLogs, 5000);

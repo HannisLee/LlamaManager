@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-LlamaManager 是一个极简的 llama.cpp Web 管理工具，通过单页面 WebUI 管理本机 llama-server 进程的启动、停止、重启，并支持从 Hugging Face 下载 GGUF 模型。
+LlamaManager 是一个极简的 llama.cpp Web 管理工具，通过单页面 WebUI 管理本机 llama-server 进程的启动、停止、重启，支持从 Hugging Face 下载 GGUF 模型，并提供多 GPU 监控与 GPU 进程列表展示。
 
 ## 技术栈
 
@@ -11,6 +11,7 @@ LlamaManager 是一个极简的 llama.cpp Web 管理工具，通过单页面 Web
 | 后端 | Python 3.12 + FastAPI |
 | 前端 | 原生 HTML/CSS/JS（无框架） |
 | 进程管理 | subprocess + psutil |
+| GPU 监控 | nvidia-smi + psutil |
 | 模型下载 | huggingface_hub Python API（`hf_hub_download`） |
 | 配置存储 | settings.json（无数据库） |
 | 运行环境 | conda 环境 `llama-manager` |
@@ -79,6 +80,8 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | `_validate_extra_args(extra)` | 校验 extra_args，禁止 shell 注入字符 |
 | `_load_model_params()` | 读取所有模型的启动参数（model_params.json） |
 | `_save_model_param(model, port, extra_args)` | 保存单个模型的启动参数 |
+| `_collect_gpu_status()` | 调用 nvidia-smi 采集 GPU 与进程信息 |
+| `_infer_model_name(cmdline)` | 从进程命令行推断模型名 |
 | `_build_command(settings, overrides)` | 拼接 llama-server 启动命令 |
 | `_kill_port_occupant(port, protected)` | 杀掉占用端口的进程（跳过受保护端口和 PID 1） |
 | `_stop_process_internal()` | 停止当前 llama-server 进程（terminate → wait 3s → kill） |
@@ -93,6 +96,7 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | POST | `/api/settings` | 保存配置 |
 | GET | `/api/models` | 递归扫描 model_dir 下 .gguf 文件 |
 | GET | `/api/status` | 当前 llama-server 进程状态 |
+| GET | `/api/gpus` | 当前 GPU 状态和 GPU 进程列表 |
 | POST | `/api/start` | 启动 llama-server |
 | POST | `/api/stop` | 停止 llama-server（同时清空日志） |
 | POST | `/api/restart` | 使用该模型上次参数重启 |
@@ -103,6 +107,40 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | GET | `/api/download/logs` | 读取下载日志尾部 100 行 |
 | POST | `/api/download/cancel` | 取消下载 |
 | GET/POST/... | `/llama/{path}` | 反向代理到 llama-server |
+
+### `/api/gpus` 返回结构
+
+```json
+{
+  "ok": true,
+  "error": null,
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA A100-PCIE-40GB",
+      "driver_version": "535.129.03",
+      "uuid": "GPU-...",
+      "bus_id": "00000000:01:00.0",
+      "gpu_util": 0,
+      "used_mem": 6339,
+      "total_mem": 40960,
+      "temperature": 51,
+      "process_count": 1,
+      "users": ["user"],
+      "processes": [
+        {
+          "pid": 12345,
+          "used_mem": 6326,
+          "process_name": "python",
+          "username": "user",
+          "command": "python ...",
+          "model_name": "Qwen3-ASR-1.7B"
+        }
+      ]
+    }
+  ]
+}
+```
 
 ### 核心流程
 
@@ -127,6 +165,14 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 1. terminate 进程 → 等待 3 秒 → kill
 2. 清空服务日志文件（截断为空）
 
+**GPU 监控：**
+1. 调用 `nvidia-smi --query-gpu=index,name,driver_version,uuid,pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits`
+2. 调用 `nvidia-smi --query-compute-apps=gpu_uuid,gpu_bus_id,pid,used_memory,process_name --format=csv,noheader,nounits`
+3. 进程归属优先按 `gpu_uuid` 映射到 GPU，失败时按 `gpu_bus_id` 映射；仍无法映射的进程行会被忽略
+4. 使用 `psutil.Process(pid)` 补充 `username` 和完整命令行，权限不足或进程退出时使用 `Unknown` / 空字符串兜底
+5. 从命令行参数 `--model`、`-m`、`--model-path`、`--model_name`、`--model-name`、`.gguf` 路径和常见模型目录名推断 `model_name`
+6. `nvidia-smi` 不存在、驱动不可用或查询超时时，接口返回 JSON：`{"ok": false, "error": "...", "gpus": []}`
+
 **端口冲突处理：**
 - 使用 `psutil.net_connections(kind="inet")` 查找 LISTEN 状态连接
 - `protected_ports`（默认 `[22]`）中的端口不会被 kill
@@ -137,14 +183,23 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 
 ### 页面布局
 
-单页面，暗色主题，max-width 900px 居中。六个卡片区块纵向排列：
+单页面，暗色主题，max-width 1200px 居中。七个卡片区块纵向排列：
 
 1. **状态区** — 运行状态徽章、PID、模型、URL、命令、操作按钮
-2. **启动区** — 模型下拉（切换时自动加载该模型上次参数）、Port、Extra Args、auto_kill 开关、Start 按钮
-3. **服务日志** — Refresh 按钮、readonly textarea
-4. **下载区** — HF 仓库ID、文件名、Download/Cancel 按钮、状态徽章、进度条、强制重新下载复选框
-5. **下载日志** — Refresh 按钮、readonly textarea
-6. **设置区** — llama-server 路径、模型目录、Save/Rescan 按钮
+2. **GPU 监控区** — 多 GPU 卡片、每排卡片数设置、GPU 进程表
+3. **启动区** — 模型下拉（切换时自动加载该模型上次参数）、Port、Extra Args、auto_kill 开关、Start 按钮
+4. **服务日志** — Refresh 按钮、readonly textarea
+5. **下载区** — HF 仓库ID、文件名、Download/Cancel 按钮、状态徽章、进度条、强制重新下载复选框
+6. **下载日志** — Refresh 按钮、readonly textarea
+7. **设置区** — llama-server 路径、模型目录、Save/Rescan 按钮
+
+GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
+- `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`
+- `2 / 3 / 4`：固定每排 GPU 卡片数
+- 窄屏下自动退化为单列
+- 设置保存到 `localStorage.gpu_cards_per_row`
+
+GPU 进程表由 `gpus[].processes[]` 展平，字段为 GPU、GPU Name、GPU Util、PID、Used Mem、Total Mem、Temp、Model Name。
 
 ### JavaScript 架构
 
@@ -161,6 +216,7 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 | `loadModelParams()` | 加载所有模型参数存入 `modelParams` |
 | `onModelChange()` | 模型下拉切换时自动回填 port/extra_args |
 | `loadStatus()` | 获取进程状态并更新 UI |
+| `loadGpuStatus()` | 获取 GPU 状态和进程列表并更新 UI |
 | `startServer()` | 收集表单参数调用 /api/start |
 | `stopServer()` | 调用 /api/stop，清空日志显示 |
 | `restartServer()` | 调用 /api/restart |
@@ -170,6 +226,7 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 
 **自动刷新：**
 - 状态：每 3 秒
+- GPU 监控：每 3 秒
 - 日志：每 5 秒
 - 下载状态：每 3 秒
 - 下载完成时自动刷新模型列表
