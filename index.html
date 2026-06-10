@@ -162,7 +162,7 @@
         }
         .custom-service-row {
             display: grid;
-            grid-template-columns: minmax(120px, 0.9fr) 70px 70px minmax(220px, 2fr) auto;
+            grid-template-columns: minmax(120px, 0.9fr) 70px minmax(220px, 2fr) auto;
             gap: 8px;
             align-items: center;
             padding: 8px 0;
@@ -495,10 +495,10 @@
                 <option value="">-- 请先扫描模型 --</option>
             </select>
 
-            <label for="start-port">Port</label>
+            <label for="start-port" id="start-port-label">Port</label>
             <input type="number" id="start-port" value="8083">
 
-            <label for="start-extra">Extra Args</label>
+            <label for="start-extra" id="start-extra-label">Extra Args</label>
             <input type="text" id="start-extra" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
 
             <div class="full-width checkbox-row">
@@ -525,16 +525,6 @@
 
             <label for="custom-service-name">服务名</label>
             <input type="text" id="custom-service-name" placeholder="Qwen3-ASR-1.7B">
-
-            <label for="custom-service-type">类型</label>
-            <select id="custom-service-type">
-                <option value="vllm">vLLM</option>
-                <option value="asr">ASR</option>
-                <option value="custom">Custom</option>
-            </select>
-
-            <label for="custom-service-port">Port</label>
-            <input type="number" id="custom-service-port" value="8085">
 
             <label for="custom-service-command">启动命令</label>
             <textarea id="custom-service-command" rows="3" placeholder="conda run -n qwen3-asr qwen-asr-serve /home/lihan/models/Qwen3-ASR-1.7B --gpu-memory-utilization 0.8 --host 0.0.0.0 --port 8085"></textarea>
@@ -704,12 +694,12 @@ async function loadModelParams() {
 function onModelChange() {
     const model = document.getElementById("start-model").value;
     const extra = document.getElementById("start-extra");
-    if (model.startsWith("custom:")) {
-        const serviceId = model.slice("custom:".length);
-        const service = customServices.find(s => s.id === serviceId);
-        if (service) {
-            document.getElementById("start-port").value = service.port || 8085;
-        }
+    const isCustom = model.startsWith("custom:");
+    document.getElementById("start-port-label").classList.toggle("hidden", isCustom);
+    document.getElementById("start-port").classList.toggle("hidden", isCustom);
+    document.getElementById("start-extra-label").classList.toggle("hidden", isCustom);
+    extra.classList.toggle("hidden", isCustom);
+    if (isCustom) {
         extra.value = "";
         extra.disabled = true;
         extra.placeholder = "自定义服务使用完整启动命令，不使用 Extra Args";
@@ -764,7 +754,7 @@ async function loadModels() {
         customServices.forEach(s => {
             const opt = document.createElement("option");
             opt.value = `custom:${s.id}`;
-            opt.textContent = `[${(s.service_type || "vllm").toUpperCase()}] ${s.name} (:${s.port})`;
+            opt.textContent = `${s.name} (:${s.port})`;
             select.appendChild(opt);
         });
         data.models.forEach(m => {
@@ -793,8 +783,6 @@ function resetCustomServiceForm() {
     editingCustomServiceId = "";
     document.getElementById("custom-service-id").value = "";
     document.getElementById("custom-service-name").value = "";
-    document.getElementById("custom-service-type").value = "vllm";
-    document.getElementById("custom-service-port").value = "8085";
     document.getElementById("custom-service-command").value = "";
     document.getElementById("custom-service-save-btn").textContent = "保存自定义服务";
 }
@@ -810,7 +798,6 @@ function renderCustomServiceList() {
     wrap.innerHTML = customServices.map(service => `
         <div class="custom-service-row">
             <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
-            <span>${escapeHtml((service.service_type || "vllm").toUpperCase())}</span>
             <span>:${escapeHtml(service.port || "-")}</span>
             <code title="${escapeHtml(service.command || "")}">${escapeHtml(service.command || "")}</code>
             <div class="custom-service-actions">
@@ -830,8 +817,6 @@ function editCustomService(serviceId) {
     editingCustomServiceId = service.id;
     document.getElementById("custom-service-id").value = service.id;
     document.getElementById("custom-service-name").value = service.name || "";
-    document.getElementById("custom-service-type").value = service.service_type || "vllm";
-    document.getElementById("custom-service-port").value = service.port || 8085;
     document.getElementById("custom-service-command").value = service.command || "";
     document.getElementById("custom-service-save-btn").textContent = "更新自定义服务";
     toggleCustomServiceForm(true);
@@ -840,15 +825,13 @@ function editCustomService(serviceId) {
 async function saveCustomService() {
     const id = document.getElementById("custom-service-id").value || editingCustomServiceId;
     const name = document.getElementById("custom-service-name").value.trim();
-    const service_type = document.getElementById("custom-service-type").value;
-    const port = parseInt(document.getElementById("custom-service-port").value) || 8085;
     const command = document.getElementById("custom-service-command").value.trim();
     if (!command) {
         showError("请输入启动命令");
         return;
     }
     try {
-        const payload = { name, service_type, port, command };
+        const payload = { name, command };
         if (id) payload.id = id;
         await api("POST", "/api/custom-services", payload);
         toggleCustomServiceForm(false);
@@ -1112,15 +1095,19 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 // ── 启动 / 停止 / 重启 ───────────────────────────────
 
 async function startServer() {
+    const model = document.getElementById("start-model").value;
+    const isCustom = model.startsWith("custom:");
     const body = {
-        model: document.getElementById("start-model").value,
+        model,
         host: "0.0.0.0",
-        port: parseInt(document.getElementById("start-port").value) || 8080,
-        extra_args: document.getElementById("start-extra").value,
         auto_kill_port: document.getElementById("start-auto-kill").checked,
         incremental_start: document.getElementById("start-incremental").checked,
         gpu_indexes: selectedGpuIndexes(),
     };
+    if (!isCustom) {
+        body.port = parseInt(document.getElementById("start-port").value) || 8080;
+        body.extra_args = document.getElementById("start-extra").value;
+    }
 
     try {
         await api("POST", "/api/start", body);

@@ -278,10 +278,12 @@ def _normalize_custom_service(raw: dict) -> dict:
     """校验并标准化自定义服务注册数据"""
     command = str(raw.get("command", "")).strip()
     tokens = _command_tokens(command)
-    service_type = str(raw.get("service_type") or "vllm").strip() or "vllm"
-    port_value = raw.get("port") or _get_option_value(tokens, {"--port"})
+    service_type = str(raw.get("service_type") or "custom").strip() or "custom"
+    port_value = _get_option_value(tokens, {"--port"})
+    if port_value in (None, ""):
+        raise HTTPException(status_code=400, detail="自定义服务命令必须包含 --port")
     try:
-        port = int(port_value) if port_value not in (None, "") else 8085
+        port = int(port_value)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="端口必须是数字")
     if port <= 0 or port > 65535:
@@ -909,12 +911,9 @@ def _build_command(settings: dict, overrides: dict) -> list:
     return cmd
 
 
-def _build_custom_command(service: dict, host: str, port: int) -> list:
-    """构建自定义服务启动命令，统一 host/port"""
-    cmd = _command_tokens(service["command"])
-    cmd = _set_option_value(cmd, "--host", host)
-    cmd = _set_option_value(cmd, "--port", str(port))
-    return cmd
+def _build_custom_command(service: dict) -> list:
+    """构建自定义服务启动命令，按注册命令原样执行"""
+    return _command_tokens(service["command"])
 
 
 def _kill_port_occupant(port: int, protected: list) -> Optional[dict]:
@@ -1144,8 +1143,10 @@ async def start_server(body: dict = None):
         if custom_service is None:
             raise HTTPException(status_code=400, detail=f"自定义服务不存在: {service_id}")
     host = body.get("host") or settings.get("host", "0.0.0.0")
-    default_port = custom_service.get("port") if custom_service else settings.get("port", 8080)
-    port = int(body.get("port") or default_port)
+    if service_kind == "custom":
+        port = int(custom_service["port"])
+    else:
+        port = int(body.get("port") or settings.get("port", 8080))
     extra_args = body.get("extra_args", "")
     incremental_start = body.get("incremental_start", True) is not False
     gpu_indexes = _parse_gpu_indexes(body.get("gpu_indexes", []))
@@ -1195,8 +1196,8 @@ async def start_server(body: dict = None):
         # 构建启动命令
         if service_kind == "custom":
             display_name = custom_service["name"]
-            service_type = custom_service.get("service_type", "vllm")
-            cmd = _build_custom_command(custom_service, host, port)
+            service_type = custom_service.get("service_type", "custom")
+            cmd = _build_custom_command(custom_service)
             model_for_record = f"custom:{custom_service['id']}"
         else:
             display_name = Path(model).name
