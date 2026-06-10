@@ -126,7 +126,8 @@
             text-align: right;
         }
         .form-grid input,
-        .form-grid select {
+        .form-grid select,
+        .form-grid textarea {
             width: 100%;
             padding: 6px 10px;
             background: #0f1629;
@@ -136,7 +137,8 @@
             font-size: 0.9em;
         }
         .form-grid input:focus,
-        .form-grid select:focus {
+        .form-grid select:focus,
+        .form-grid textarea:focus {
             outline: none;
             border-color: #1565c0;
         }
@@ -146,13 +148,14 @@
         }
 
         .full-width { grid-column: 1 / -1; }
+        .hidden { display: none; }
 
         /* 日志区域 */
         .log-area {
             width: 100%;
-            min-height: 80px;
-            max-height: 300px;
-            height: 150px;
+            min-height: 180px;
+            max-height: 600px;
+            height: 320px;
             background: #0a0a1a;
             border: 1px solid #333;
             border-radius: 4px;
@@ -468,13 +471,39 @@
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
+            <button class="btn-secondary" onclick="toggleCustomServiceForm()">添加自定义服务</button>
+        </div>
+        <div id="custom-service-form" class="form-grid hidden" style="margin-top:14px; border-top:1px solid #2f3b52; padding-top:14px;">
+            <label for="custom-service-name">服务名</label>
+            <input type="text" id="custom-service-name" placeholder="Qwen3-ASR-1.7B">
+
+            <label for="custom-service-type">类型</label>
+            <select id="custom-service-type">
+                <option value="vllm">vLLM</option>
+                <option value="asr">ASR</option>
+                <option value="custom">Custom</option>
+            </select>
+
+            <label for="custom-service-port">Port</label>
+            <input type="number" id="custom-service-port" value="8085">
+
+            <label for="custom-service-command">启动命令</label>
+            <textarea id="custom-service-command" rows="3" placeholder="conda run -n qwen3-asr qwen-asr-serve /home/lihan/models/Qwen3-ASR-1.7B --gpu-memory-utilization 0.8 --host 0.0.0.0 --port 8085"></textarea>
+
+            <div class="full-width btn-group">
+                <button class="btn-primary" onclick="saveCustomService()">保存自定义服务</button>
+                <button class="btn-secondary" onclick="toggleCustomServiceForm(false)">取消</button>
+            </div>
         </div>
     </div>
 
     <!-- 第三块：服务日志 -->
     <div class="card">
         <h2>服务日志</h2>
-        <div class="btn-group" style="margin-bottom:10px">
+        <div class="btn-group" style="margin-bottom:10px; align-items:center;">
+            <select id="log-process-select" onchange="loadLogs()" style="padding:6px 10px; background:#0f1629; border:1px solid #333; border-radius:4px; color:#e0e0e0; min-width:260px;">
+                <option value="">最新受管进程 / 默认日志</option>
+            </select>
             <button class="btn-secondary" onclick="loadLogs()">Refresh Logs</button>
         </div>
         <textarea id="log-area" class="log-area" readonly placeholder="暂无日志"></textarea>
@@ -543,6 +572,8 @@
 // ── 全局状态 ──────────────────────────────────────────
 let currentSettings = {};
 let currentGpuIndexes = [];
+let customServices = [];
+let managedProcessRecords = [];
 
 // ── 工具函数 ──────────────────────────────────────────
 
@@ -618,14 +649,28 @@ async function loadModelParams() {
 
 function onModelChange() {
     const model = document.getElementById("start-model").value;
+    const extra = document.getElementById("start-extra");
+    if (model.startsWith("custom:")) {
+        const serviceId = model.slice("custom:".length);
+        const service = customServices.find(s => s.id === serviceId);
+        if (service) {
+            document.getElementById("start-port").value = service.port || 8085;
+        }
+        extra.value = "";
+        extra.disabled = true;
+        extra.placeholder = "自定义服务使用完整启动命令，不使用 Extra Args";
+        return;
+    }
+    extra.disabled = false;
+    extra.placeholder = "-c 4096 --n-gpu-layers 99 --threads 8";
     const params = modelParams[model];
     if (params) {
         document.getElementById("start-port").value = params.port || 8083;
-        document.getElementById("start-extra").value = params.extra_args || "";
+        extra.value = params.extra_args || "";
     } else {
         // 未启动过的模型，恢复默认
         document.getElementById("start-port").value = currentSettings.port || 8083;
-        document.getElementById("start-extra").value = "";
+        extra.value = "";
     }
 }
 
@@ -647,19 +692,27 @@ async function saveSettings() {
 
 async function loadModels() {
     const data = await api("GET", "/api/models");
+    const serviceData = await api("GET", "/api/custom-services");
+    customServices = serviceData.services || [];
     const select = document.getElementById("start-model");
     // 清空选项
     select.innerHTML = "";
-    if (data.models.length === 0) {
+    if (data.models.length === 0 && customServices.length === 0) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "-- 未找到 GGUF 模型 --";
+        opt.textContent = "-- 未找到模型或自定义服务 --";
         select.appendChild(opt);
     } else {
         const placeholder = document.createElement("option");
         placeholder.value = "";
         placeholder.textContent = "-- 选择模型 --";
         select.appendChild(placeholder);
+        customServices.forEach(s => {
+            const opt = document.createElement("option");
+            opt.value = `custom:${s.id}`;
+            opt.textContent = `[${(s.service_type || "vllm").toUpperCase()}] ${s.name} (:${s.port})`;
+            select.appendChild(opt);
+        });
         data.models.forEach(m => {
             const opt = document.createElement("option");
             opt.value = m.path;
@@ -669,6 +722,31 @@ async function loadModels() {
             select.appendChild(opt);
         });
     }
+    onModelChange();
+}
+
+function toggleCustomServiceForm(force) {
+    const form = document.getElementById("custom-service-form");
+    const show = force === undefined ? form.classList.contains("hidden") : force;
+    form.classList.toggle("hidden", !show);
+}
+
+async function saveCustomService() {
+    const name = document.getElementById("custom-service-name").value.trim();
+    const service_type = document.getElementById("custom-service-type").value;
+    const port = parseInt(document.getElementById("custom-service-port").value) || 8085;
+    const command = document.getElementById("custom-service-command").value.trim();
+    if (!command) {
+        showError("请输入启动命令");
+        return;
+    }
+    try {
+        await api("POST", "/api/custom-services", { name, service_type, port, command });
+        document.getElementById("custom-service-name").value = "";
+        document.getElementById("custom-service-command").value = "";
+        toggleCustomServiceForm(false);
+        await loadModels();
+    } catch (e) {}
 }
 
 // ── GPU 监控 ──────────────────────────────────────────
@@ -716,6 +794,10 @@ function updateGpuUI(data) {
     const historyHours = Number(data.history_hours || currentSettings.gpu_history_hours || 2);
 
     currentGpuIndexes = gpus.map(gpu => Number(gpu.index));
+    if (managedProcesses.length) {
+        managedProcessRecords = managedProcesses;
+        updateLogProcessSelect();
+    }
     updateStartGpuList(gpus);
 
     if (data.error) {
@@ -920,6 +1002,7 @@ async function startServer() {
     try {
         await api("POST", "/api/start", body);
         loadGpuStatus();
+        loadManagedProcesses();
         loadLogs();
     } catch (e) {}
 }
@@ -929,6 +1012,7 @@ async function stopServer() {
         await api("POST", "/api/stop");
         document.getElementById("log-area").value = "";
         loadGpuStatus();
+        loadManagedProcesses();
     } catch (e) {}
 }
 
@@ -936,6 +1020,7 @@ async function restartServer() {
     try {
         await api("POST", "/api/restart");
         loadGpuStatus();
+        loadManagedProcesses();
         loadLogs();
     } catch (e) {}
 }
@@ -952,6 +1037,7 @@ async function stopManagedProcess(pid) {
     try {
         await api("POST", "/api/stop", { pid });
         loadGpuStatus();
+        loadManagedProcesses();
         loadLogs();
     } catch (e) {}
 }
@@ -960,15 +1046,48 @@ async function restartManagedProcess(pid) {
     try {
         await api("POST", "/api/restart", { pid });
         loadGpuStatus();
+        loadManagedProcesses();
         loadLogs();
     } catch (e) {}
 }
 
 // ── 日志 ──────────────────────────────────────────────
 
+async function loadManagedProcesses() {
+    try {
+        const data = await api("GET", "/api/managed-processes");
+        managedProcessRecords = data.processes || [];
+        updateLogProcessSelect();
+    } catch (e) {}
+}
+
+function updateLogProcessSelect() {
+    const select = document.getElementById("log-process-select");
+    const current = select.value;
+    select.innerHTML = "";
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "";
+    defaultOpt.textContent = "最新受管进程 / 默认日志";
+    select.appendChild(defaultOpt);
+    managedProcessRecords.forEach(proc => {
+        const opt = document.createElement("option");
+        opt.value = String(proc.pid);
+        const state = proc.running ? "Running" : "Stopped";
+        const type = (proc.service_type || proc.service_kind || "llama").toUpperCase();
+        opt.textContent = `PID ${proc.pid} · ${type} · ${proc.display_name || proc.model_name || "Unknown"} · :${proc.port} · ${state}`;
+        select.appendChild(opt);
+    });
+    if (Array.from(select.options).some(opt => opt.value === current)) {
+        select.value = current;
+    }
+}
+
 async function loadLogs() {
     try {
-        const data = await api("GET", "/api/logs");
+        await loadManagedProcesses();
+        const pid = document.getElementById("log-process-select").value;
+        const path = pid ? `/api/logs?pid=${encodeURIComponent(pid)}` : "/api/logs";
+        const data = await api("GET", path);
         document.getElementById("log-area").value = data.logs || "";
     } catch (e) {}
 }
@@ -1073,8 +1192,9 @@ async function loadDownloadLogs() {
 
 document.addEventListener("DOMContentLoaded", () => {
     initGpuCardsPerRow();
-    loadSettings().then(() => loadModels()).then(() => loadModelParams());
+    loadSettings().then(() => loadModelParams()).then(() => loadModels());
     loadGpuStatus();
+    loadManagedProcesses();
     loadLogs();
     loadDownloadLogs();
 

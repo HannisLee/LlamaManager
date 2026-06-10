@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,7 @@ APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
 MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
 GPU_HISTORY_PATH = APP_DIR / "gpu_history.json"
+CUSTOM_SERVICES_PATH = APP_DIR / "custom_services.json"
 
 # ── 全局进程状态 ──────────────────────────────────────────
 _current_process: Optional[subprocess.Popen] = None
@@ -36,6 +38,7 @@ _current_model: Optional[str] = None
 _current_port: Optional[int] = None
 _current_host: Optional[str] = None
 _managed_processes: dict[int, dict] = {}
+_managed_process_records: dict[int, dict] = {}
 _process_lock = threading.Lock()
 
 # ── GPU 历史状态 ───────────────────────────────────────
@@ -176,6 +179,123 @@ def _save_model_param(model: str, port: int, extra_args: str):
         )
     except OSError:
         pass
+
+
+def _load_custom_services() -> dict:
+    """读取自定义服务注册表，格式: {service_id: service_config}"""
+    try:
+        if CUSTOM_SERVICES_PATH.exists():
+            data = json.loads(CUSTOM_SERVICES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_custom_services(data: dict):
+    """原子写入自定义服务注册表"""
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(APP_DIR), suffix=".custom_services.tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(CUSTOM_SERVICES_PATH))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _command_tokens(command: str) -> list:
+    """解析自定义服务命令"""
+    if not command or not command.strip():
+        raise HTTPException(status_code=400, detail="启动命令不能为空")
+    try:
+        tokens = shlex.split(command)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"启动命令解析失败: {e}")
+    if not tokens:
+        raise HTTPException(status_code=400, detail="启动命令不能为空")
+    forbidden = {"|", ">", "<", ";", "&", "`", "$", "(", ")", "#"}
+    for token in tokens:
+        if token in forbidden:
+            raise HTTPException(status_code=400, detail=f"启动命令包含不支持的 shell 符号: {token}")
+    return tokens
+
+
+def _get_option_value(tokens: list, names: set) -> Optional[str]:
+    """从命令参数中读取 --key value 或 --key=value"""
+    for i, token in enumerate(tokens):
+        for name in names:
+            if token == name and i + 1 < len(tokens):
+                return tokens[i + 1]
+            prefix = f"{name}="
+            if token.startswith(prefix):
+                return token[len(prefix):]
+    return None
+
+
+def _set_option_value(tokens: list, name: str, value: str) -> list:
+    """设置或追加命令参数 --key value"""
+    result = list(tokens)
+    for i, token in enumerate(result):
+        if token == name:
+            if i + 1 < len(result):
+                result[i + 1] = value
+            else:
+                result.append(value)
+            return result
+        prefix = f"{name}="
+        if token.startswith(prefix):
+            result[i] = f"{name}={value}"
+            return result
+    result.extend([name, value])
+    return result
+
+
+def _infer_custom_service_name(tokens: list, command: str) -> str:
+    """从自定义命令中推断服务名"""
+    model_value = _get_option_value(tokens, {"--model", "-m", "--model-path", "--model_name", "--model-name"})
+    if model_value:
+        name = _model_name_from_value(model_value) or Path(model_value).name
+        if name:
+            return name
+    for token in reversed(tokens):
+        if token.startswith("-"):
+            continue
+        if "/" in token or "\\" in token:
+            name = Path(token).name
+            if name:
+                return name
+    return Path(tokens[0]).name if tokens else command[:32]
+
+
+def _normalize_custom_service(raw: dict) -> dict:
+    """校验并标准化自定义服务注册数据"""
+    command = str(raw.get("command", "")).strip()
+    tokens = _command_tokens(command)
+    service_type = str(raw.get("service_type") or "vllm").strip() or "vllm"
+    port_value = raw.get("port") or _get_option_value(tokens, {"--port"})
+    try:
+        port = int(port_value) if port_value not in (None, "") else 8085
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="端口必须是数字")
+    if port <= 0 or port > 65535:
+        raise HTTPException(status_code=400, detail="端口范围必须是 1-65535")
+    name = str(raw.get("name") or "").strip() or _infer_custom_service_name(tokens, command)
+    service_id = str(raw.get("id") or f"svc_{uuid.uuid4().hex[:12]}")
+    return {
+        "id": service_id,
+        "name": name,
+        "service_type": service_type,
+        "command": command,
+        "port": port,
+        "created_at": raw.get("created_at") or time.time(),
+    }
 
 
 def _to_int(value, default=0) -> int:
@@ -461,6 +581,8 @@ def _sync_current_from_managed():
         if not _is_process_running(item.get("process"))
     ]
     for pid in dead_pids:
+        if pid in _managed_process_records:
+            _managed_process_records[pid]["running"] = False
         _managed_processes.pop(pid, None)
 
     if not live_items:
@@ -491,7 +613,11 @@ def _managed_process_snapshot() -> dict[int, dict]:
             result[pid] = {
                 "pid": pid,
                 "model": item["model"],
-                "model_name": Path(item["model"]).name,
+                "model_name": item.get("display_name") or Path(item["model"]).name,
+                "display_name": item.get("display_name") or Path(item["model"]).name,
+                "service_kind": item.get("service_kind", "llama"),
+                "service_type": item.get("service_type", "llama"),
+                "service_id": item.get("service_id"),
                 "host": item["host"],
                 "port": item["port"],
                 "url": f"http://{item['host']}:{item['port']}",
@@ -499,9 +625,29 @@ def _managed_process_snapshot() -> dict[int, dict]:
                 "command": " ".join(item["command"]),
                 "extra_args": item.get("extra_args", ""),
                 "gpu_indexes": item.get("gpu_indexes", []),
+                "log_file": item.get("log_file"),
                 "started_at": item.get("started_at"),
+                "running": True,
             }
         return result
+
+
+def _managed_process_records_snapshot() -> list:
+    """获取当前运行期所有已知受管进程记录"""
+    live = _managed_process_snapshot()
+    records = {pid: dict(record) for pid, record in _managed_process_records.items()}
+    for pid, record in live.items():
+        records[pid] = {**records.get(pid, {}), **record, "running": True}
+    return sorted(records.values(), key=lambda item: item.get("started_at") or 0, reverse=True)
+
+
+def _create_process_log_path(service_kind: str, display_name: str, port: int) -> Path:
+    """为受管进程生成日志文件路径"""
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", display_name).strip("_") or service_kind
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    log_dir = APP_DIR / "logs" / "services"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{service_kind}-{safe_name}-{port}-{ts}.log"
 
 
 def _parse_gpu_indexes(value) -> list[int]:
@@ -699,6 +845,14 @@ def _build_command(settings: dict, overrides: dict) -> list:
     return cmd
 
 
+def _build_custom_command(service: dict, host: str, port: int) -> list:
+    """构建自定义服务启动命令，统一 host/port"""
+    cmd = _command_tokens(service["command"])
+    cmd = _set_option_value(cmd, "--host", host)
+    cmd = _set_option_value(cmd, "--port", str(port))
+    return cmd
+
+
 def _kill_port_occupant(port: int, protected: list) -> Optional[dict]:
     """
     杀掉占用指定端口的进程。
@@ -832,6 +986,37 @@ async def get_models():
     return JSONResponse({"models": models, "model_dir": model_dir})
 
 
+@app.get("/api/custom-services")
+async def get_custom_services():
+    """读取自定义服务注册表"""
+    services = sorted(
+        _load_custom_services().values(),
+        key=lambda item: item.get("created_at", 0),
+    )
+    return JSONResponse({"services": services})
+
+
+@app.post("/api/custom-services")
+async def save_custom_service(data: dict):
+    """注册或更新自定义服务"""
+    services = _load_custom_services()
+    service = _normalize_custom_service(data or {})
+    services[service["id"]] = service
+    _save_custom_services(services)
+    return JSONResponse({"ok": True, "service": service})
+
+
+@app.delete("/api/custom-services/{service_id}")
+async def delete_custom_service(service_id: str):
+    """删除自定义服务注册项"""
+    services = _load_custom_services()
+    if service_id not in services:
+        raise HTTPException(status_code=404, detail=f"自定义服务不存在: {service_id}")
+    service = services.pop(service_id)
+    _save_custom_services(services)
+    return JSONResponse({"ok": True, "service": service})
+
+
 @app.get("/api/status")
 async def get_status():
     """获取当前 llama-server 运行状态"""
@@ -865,6 +1050,12 @@ async def get_gpus():
     return JSONResponse(_collect_gpu_status())
 
 
+@app.get("/api/managed-processes")
+async def get_managed_processes():
+    """获取当前运行期已知受管进程记录"""
+    return JSONResponse({"processes": _managed_process_records_snapshot()})
+
+
 @app.post("/api/start")
 async def start_server(body: dict = None):
     """启动 llama-server"""
@@ -877,30 +1068,39 @@ async def start_server(body: dict = None):
 
     # 合并参数
     model = body.get("model") or settings.get("model", "")
+    service_kind = "custom" if isinstance(model, str) and model.startswith("custom:") else "llama"
+    service_id = model.split(":", 1)[1] if service_kind == "custom" else None
+    custom_service = None
+    if service_kind == "custom":
+        custom_service = _load_custom_services().get(service_id)
+        if custom_service is None:
+            raise HTTPException(status_code=400, detail=f"自定义服务不存在: {service_id}")
     host = body.get("host") or settings.get("host", "0.0.0.0")
-    port = int(body.get("port") or settings.get("port", 8080))
+    default_port = custom_service.get("port") if custom_service else settings.get("port", 8080)
+    port = int(body.get("port") or default_port)
     extra_args = body.get("extra_args", "")
     incremental_start = body.get("incremental_start", True) is not False
     gpu_indexes = _parse_gpu_indexes(body.get("gpu_indexes", []))
 
     # 校验 extra_args
-    err = _validate_extra_args(extra_args)
-    if err:
-        raise HTTPException(status_code=400, detail=err)
+    if service_kind == "llama":
+        err = _validate_extra_args(extra_args)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
 
     llama_server_path = settings.get("llama_server_path", "")
     auto_kill_port = body.get("auto_kill_port", settings.get("auto_kill_port", True))
     protected_ports = settings.get("protected_ports", [22])
 
     # 校验 llama-server 路径
-    if not llama_server_path or not Path(llama_server_path).is_file():
+    if service_kind == "llama" and (not llama_server_path or not Path(llama_server_path).is_file()):
         raise HTTPException(
             status_code=400,
             detail=f"llama-server 不存在: {llama_server_path}"
         )
 
     # 校验模型文件
-    if not model or not Path(model).is_file():
+    if service_kind == "llama" and (not model or not Path(model).is_file()):
         raise HTTPException(
             status_code=400,
             detail=f"模型文件不存在: {model}"
@@ -925,20 +1125,25 @@ async def start_server(body: dict = None):
             killed_info = _kill_port_occupant(port, protected_ports)
 
         # 构建启动命令
-        overrides = {
-            "model": model,
-            "host": host,
-            "port": port,
-            "extra_args": extra_args,
-        }
-        cmd = _build_command(settings, overrides)
+        if service_kind == "custom":
+            display_name = custom_service["name"]
+            service_type = custom_service.get("service_type", "vllm")
+            cmd = _build_custom_command(custom_service, host, port)
+            model_for_record = f"custom:{custom_service['id']}"
+        else:
+            display_name = Path(model).name
+            service_type = "llama"
+            overrides = {
+                "model": model,
+                "host": host,
+                "port": port,
+                "extra_args": extra_args,
+            }
+            cmd = _build_command(settings, overrides)
+            model_for_record = model
 
         # 准备日志目录
-        log_file = settings.get("log_file", "./logs/llama-server.log")
-        log_path = Path(log_file)
-        if not log_path.is_absolute():
-            log_path = APP_DIR / log_path
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = _create_process_log_path(service_type, display_name, port)
 
         env = os.environ.copy()
         if gpu_indexes:
@@ -962,22 +1167,47 @@ async def start_server(body: dict = None):
         _managed_processes[proc.pid] = {
             "process": proc,
             "command": cmd,
-            "model": model,
+            "model": model_for_record,
+            "display_name": display_name,
+            "service_kind": service_kind,
+            "service_type": service_type,
+            "service_id": service_id,
             "host": host,
             "port": port,
-            "extra_args": extra_args,
+            "extra_args": extra_args if service_kind == "llama" else "",
             "gpu_indexes": gpu_indexes,
+            "log_file": str(log_path),
             "started_at": time.time(),
+        }
+        _managed_process_records[proc.pid] = {
+            "pid": proc.pid,
+            "model": model_for_record,
+            "model_name": display_name,
+            "display_name": display_name,
+            "service_kind": service_kind,
+            "service_type": service_type,
+            "service_id": service_id,
+            "host": host,
+            "port": port,
+            "url": f"http://{host}:{port}",
+            "proxy_url": f"/llama-process/{proc.pid}/",
+            "command": " ".join(cmd),
+            "extra_args": extra_args if service_kind == "llama" else "",
+            "gpu_indexes": gpu_indexes,
+            "log_file": str(log_path),
+            "started_at": _managed_processes[proc.pid]["started_at"],
+            "running": True,
         }
 
         _current_process = proc
         _current_command = cmd
-        _current_model = model
+        _current_model = model_for_record
         _current_port = port
         _current_host = host
 
     # 按模型保存启动参数
-    _save_model_param(model, port, extra_args)
+    if service_kind == "llama":
+        _save_model_param(model, port, extra_args)
 
     result = {
         "ok": True,
@@ -985,6 +1215,10 @@ async def start_server(body: dict = None):
         "url": f"http://{host}:{port}",
         "proxy_url": f"/llama-process/{proc.pid}/",
         "command": " ".join(cmd),
+        "service_kind": service_kind,
+        "service_type": service_type,
+        "display_name": display_name,
+        "log_file": str(log_path),
         "gpu_indexes": gpu_indexes,
         "incremental_start": incremental_start,
         "killed": killed_info,
@@ -1053,22 +1287,37 @@ async def get_model_params():
 
 
 @app.get("/api/logs")
-async def get_logs():
-    """读取日志文件尾部"""
-    settings = _load_settings()
-    log_file = settings.get("log_file", "./logs/llama-server.log")
-    log_path = Path(log_file)
+async def get_logs(pid: Optional[int] = None):
+    """读取服务日志尾部，pid 为空时读取最新受管进程日志"""
+    log_path = None
+    if pid is not None:
+        record = {item["pid"]: item for item in _managed_process_records_snapshot()}.get(pid)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"受管进程不存在: {pid}")
+        log_file = record.get("log_file")
+        if log_file:
+            log_path = Path(log_file)
+    else:
+        records = _managed_process_records_snapshot()
+        if records and records[0].get("log_file"):
+            log_path = Path(records[0]["log_file"])
+
+    if log_path is None:
+        settings = _load_settings()
+        log_file = settings.get("log_file", "./logs/llama-server.log")
+        log_path = Path(log_file)
+
     if not log_path.is_absolute():
         log_path = APP_DIR / log_path
 
     if not log_path.exists():
-        return JSONResponse({"logs": ""})
+        return JSONResponse({"logs": "", "path": str(log_path)})
 
     try:
         lines = log_path.read_text(errors="replace").splitlines()
-        return JSONResponse({"logs": "\n".join(lines[-100:])})
+        return JSONResponse({"logs": "\n".join(lines[-200:]), "path": str(log_path)})
     except Exception as e:
-        return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
+        return JSONResponse({"logs": f"读取日志失败: {str(e)}", "path": str(log_path)})
 
 
 # ── 下载 API ────────────────────────────────────────────

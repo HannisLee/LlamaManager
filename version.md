@@ -119,3 +119,15 @@
 - 新增 `.gitignore` 忽略本地 GPU 历史文件
 - `nvidia-smi` 不可用时，GPU 波形图改为基于本地 `gpu_history.json` 兜底展示
 - 修复 `/llama-process/{pid}/` 根路径代理，确保进程表 Open 按钮能打开指定实例
+
+## v0.1.0 — 2026-06-10
+
+- 新增自定义服务注册功能，支持将 vLLM / ASR 等非 llama.cpp 启动命令加入模型下拉框
+- 新增 `custom_services.json` 本地注册表，并加入 `.gitignore`
+- 自定义服务启动命令由后端统一解析、补齐 host/port，并由 LlamaManager 负责后台运行和日志重定向
+- 启动服务区新增“添加自定义服务”表单，服务项在模型下拉框中以 `[VLLM]` 等类型标识
+- 受管进程新增 service_kind、service_type、display_name、log_file 等元数据
+- 服务日志改为按进程选择展示，`/api/logs` 支持 `pid` 参数
+- 服务日志框高度增大，默认显示更多日志内容
+- 新增 `/api/custom-services` 和 `/api/managed-processes` API
+- spec.md 同步更新自定义服务和多进程日志设计
