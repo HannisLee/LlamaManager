@@ -641,6 +641,20 @@ def _managed_process_records_snapshot() -> list:
     return sorted(records.values(), key=lambda item: item.get("started_at") or 0, reverse=True)
 
 
+def _managed_process_pid_map(managed: dict[int, dict]) -> dict[int, int]:
+    """建立受管 PID 及其子进程 PID 到受管根 PID 的映射"""
+    result = {}
+    for root_pid in managed:
+        result[root_pid] = root_pid
+        try:
+            root_proc = psutil.Process(root_pid)
+            for child in root_proc.children(recursive=True):
+                result[child.pid] = root_pid
+        except (psutil.AccessDenied, psutil.NoSuchProcess, ValueError):
+            continue
+    return result
+
+
 def _create_process_log_path(service_kind: str, display_name: str, port: int) -> Path:
     """为受管进程生成日志文件路径"""
     safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", display_name).strip("_") or service_kind
@@ -687,6 +701,7 @@ def _collect_gpu_status() -> dict:
     settings = _load_settings()
     history_hours = _get_gpu_history_hours(settings)
     managed = _managed_process_snapshot()
+    managed_pid_map = _managed_process_pid_map(managed)
     gpu_fields = [
         "index",
         "name",
@@ -751,6 +766,41 @@ def _collect_gpu_status() -> dict:
     ])
 
     managed_rows = {}
+
+    def _merge_managed_gpu_row(root_pid: int, gpu: dict, process: dict):
+        """将同一个受管服务在多张 GPU 上的占用合并成一行"""
+        managed_info = managed.get(root_pid, {})
+        row = managed_rows.setdefault(root_pid, {
+            **managed_info,
+            "gpu": [],
+            "gpu_name": [],
+            "gpu_util": 0,
+            "used_mem": 0,
+            "total_mem": 0,
+            "temperature": None,
+            "username": process.get("username", "Unknown"),
+            "process_name": process.get("process_name", ""),
+            "gpu_process_pids": [],
+        })
+        if gpu["index"] not in row["gpu"]:
+            row["gpu"].append(gpu["index"])
+        if gpu["name"] and gpu["name"] not in row["gpu_name"]:
+            row["gpu_name"].append(gpu["name"])
+        row["gpu_util"] = max(_to_int(row.get("gpu_util")), _to_int(gpu.get("gpu_util")))
+        row["used_mem"] = _to_int(row.get("used_mem")) + _to_int(process.get("used_mem"))
+        if gpu["index"] not in row.setdefault("_total_mem_indexes", []):
+            row["_total_mem_indexes"].append(gpu["index"])
+            row["total_mem"] = _to_int(row.get("total_mem")) + _to_int(gpu.get("total_mem"))
+        temp = gpu.get("temperature")
+        if temp is not None:
+            row["temperature"] = temp if row["temperature"] is None else max(row["temperature"], temp)
+        if process.get("username") and row["username"] == "Unknown":
+            row["username"] = process["username"]
+        if process.get("process_name") and not row["process_name"]:
+            row["process_name"] = process["process_name"]
+        gpu_pid = process.get("gpu_pid")
+        if gpu_pid and gpu_pid not in row["gpu_process_pids"]:
+            row["gpu_process_pids"].append(gpu_pid)
     if not process_error:
         for row in process_rows or []:
             if len(row) < len(process_fields):
@@ -759,18 +809,20 @@ def _collect_gpu_status() -> dict:
             if gpu is None:
                 continue
 
-            pid = _to_int(row[2], default=-1)
-            if pid not in managed:
+            gpu_pid = _to_int(row[2], default=-1)
+            root_pid = managed_pid_map.get(gpu_pid)
+            if root_pid not in managed:
                 continue
 
-            proc_detail = _get_process_detail(pid) if pid > 0 else {
+            proc_detail = _get_process_detail(gpu_pid) if gpu_pid > 0 else {
                 "username": "Unknown",
                 "command": "",
                 "cmdline": [],
             }
-            managed_info = managed.get(pid, {})
+            managed_info = managed.get(root_pid, {})
             process = {
-                "pid": pid if pid > 0 else None,
+                "pid": root_pid,
+                "gpu_pid": gpu_pid if gpu_pid > 0 else None,
                 "used_mem": _to_int(row[3]),
                 "process_name": row[4],
                 "username": proc_detail["username"],
@@ -785,17 +837,7 @@ def _collect_gpu_status() -> dict:
                 "started_at": managed_info.get("started_at"),
             }
             gpu["processes"].append(process)
-            managed_rows[pid] = {
-                **managed_info,
-                "gpu": gpu["index"],
-                "gpu_name": gpu["name"],
-                "gpu_util": gpu["gpu_util"],
-                "used_mem": process["used_mem"],
-                "total_mem": gpu["total_mem"],
-                "temperature": gpu["temperature"],
-                "username": process["username"],
-                "process_name": process["process_name"],
-            }
+            _merge_managed_gpu_row(root_pid, gpu, process)
 
     for gpu in gpus:
         users = sorted({
@@ -808,6 +850,28 @@ def _collect_gpu_status() -> dict:
 
     managed_processes = []
     for pid, item in managed.items():
+        row = managed_rows.get(pid, {})
+        if not row:
+            fallback_gpus = [
+                gpu for gpu in gpus
+                if gpu["index"] in (item.get("gpu_indexes") or [])
+            ]
+            if fallback_gpus:
+                row = {
+                    "gpu": [gpu["index"] for gpu in fallback_gpus],
+                    "gpu_name": [gpu["name"] for gpu in fallback_gpus if gpu.get("name")],
+                    "gpu_util": max(_to_int(gpu.get("gpu_util")) for gpu in fallback_gpus),
+                    "used_mem": None,
+                    "total_mem": sum(_to_int(gpu.get("total_mem")) for gpu in fallback_gpus),
+                    "temperature": max(_to_int(gpu.get("temperature")) for gpu in fallback_gpus),
+                }
+        if row:
+            row = dict(row)
+            row.pop("_total_mem_indexes", None)
+            if isinstance(row.get("gpu"), list):
+                row["gpu"] = ", ".join(str(v) for v in row["gpu"])
+            if isinstance(row.get("gpu_name"), list):
+                row["gpu_name"] = ", ".join(row["gpu_name"])
         managed_processes.append({
             **item,
             "gpu": None,
@@ -818,7 +882,7 @@ def _collect_gpu_status() -> dict:
             "temperature": None,
             "username": "Unknown",
             "process_name": "",
-            **managed_rows.get(pid, {}),
+            **row,
         })
 
     return {
@@ -1000,7 +1064,11 @@ async def get_custom_services():
 async def save_custom_service(data: dict):
     """注册或更新自定义服务"""
     services = _load_custom_services()
-    service = _normalize_custom_service(data or {})
+    payload = dict(data or {})
+    service_id = str(payload.get("id") or "")
+    if service_id and service_id in services:
+        payload = {**services[service_id], **payload}
+    service = _normalize_custom_service(payload)
     services[service["id"]] = service
     _save_custom_services(services)
     return JSONResponse({"ok": True, "service": service})

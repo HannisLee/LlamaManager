@@ -131,3 +131,12 @@
 - 服务日志框高度增大，默认显示更多日志内容
 - 新增 `/api/custom-services` 和 `/api/managed-processes` API
 - spec.md 同步更新自定义服务和多进程日志设计
+
+## v0.1.1 — 2026-06-10
+
+- 自定义服务新增已注册列表，支持编辑和删除已有服务命令
+- 编辑自定义服务时复用原 service_id，并保留原始 created_at
+- GPU 进程采集新增受管父进程与子进程 PID 映射，兼容 vLLM / conda 启动器由子进程实际占用 GPU 的情况
+- GPU 进程表支持将同一服务的多 GPU 占用汇总展示
+- `nvidia-smi` 未返回 compute-apps 行但启动时选择了 GPU 时，使用所选 GPU 回填 GPU Name、Util、Total Mem、Temp，Used Mem 保持空值
+- spec.md 同步更新自定义服务管理和 GPU PID 映射逻辑

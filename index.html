@@ -150,6 +150,46 @@
         .full-width { grid-column: 1 / -1; }
         .hidden { display: none; }
 
+        .custom-service-list {
+            margin-top: 12px;
+            border-top: 1px solid #2f3b52;
+            padding-top: 12px;
+        }
+        .custom-service-list h3 {
+            font-size: 0.95em;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+        .custom-service-row {
+            display: grid;
+            grid-template-columns: minmax(120px, 0.9fr) 70px 70px minmax(220px, 2fr) auto;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #263247;
+            font-size: 0.88em;
+        }
+        .custom-service-row:last-child {
+            border-bottom: none;
+        }
+        .custom-service-row code {
+            color: #b7c7df;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+        }
+        .custom-service-actions {
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+        .custom-service-empty {
+            color: #7d8ba3;
+            font-size: 0.88em;
+        }
+
         /* 日志区域 */
         .log-area {
             width: 100%;
@@ -372,6 +412,13 @@
 
         @media (max-width: 760px) {
             .container { padding: 12px; }
+            .custom-service-row {
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
+            .custom-service-actions {
+                justify-content: flex-start;
+            }
             .gpu-wave-grid,
             .gpu-wave-grid.cols-2,
             .gpu-wave-grid.cols-3,
@@ -474,6 +521,8 @@
             <button class="btn-secondary" onclick="toggleCustomServiceForm()">添加自定义服务</button>
         </div>
         <div id="custom-service-form" class="form-grid hidden" style="margin-top:14px; border-top:1px solid #2f3b52; padding-top:14px;">
+            <input type="hidden" id="custom-service-id">
+
             <label for="custom-service-name">服务名</label>
             <input type="text" id="custom-service-name" placeholder="Qwen3-ASR-1.7B">
 
@@ -491,9 +540,13 @@
             <textarea id="custom-service-command" rows="3" placeholder="conda run -n qwen3-asr qwen-asr-serve /home/lihan/models/Qwen3-ASR-1.7B --gpu-memory-utilization 0.8 --host 0.0.0.0 --port 8085"></textarea>
 
             <div class="full-width btn-group">
-                <button class="btn-primary" onclick="saveCustomService()">保存自定义服务</button>
+                <button class="btn-primary" id="custom-service-save-btn" onclick="saveCustomService()">保存自定义服务</button>
                 <button class="btn-secondary" onclick="toggleCustomServiceForm(false)">取消</button>
             </div>
+        </div>
+        <div class="custom-service-list">
+            <h3>已注册自定义服务</h3>
+            <div id="custom-service-list" class="custom-service-empty">暂无自定义服务</div>
         </div>
     </div>
 
@@ -574,6 +627,7 @@ let currentSettings = {};
 let currentGpuIndexes = [];
 let customServices = [];
 let managedProcessRecords = [];
+let editingCustomServiceId = "";
 
 // ── 工具函数 ──────────────────────────────────────────
 
@@ -723,15 +777,68 @@ async function loadModels() {
         });
     }
     onModelChange();
+    renderCustomServiceList();
 }
 
 function toggleCustomServiceForm(force) {
     const form = document.getElementById("custom-service-form");
     const show = force === undefined ? form.classList.contains("hidden") : force;
     form.classList.toggle("hidden", !show);
+    if (!show) {
+        resetCustomServiceForm();
+    }
+}
+
+function resetCustomServiceForm() {
+    editingCustomServiceId = "";
+    document.getElementById("custom-service-id").value = "";
+    document.getElementById("custom-service-name").value = "";
+    document.getElementById("custom-service-type").value = "vllm";
+    document.getElementById("custom-service-port").value = "8085";
+    document.getElementById("custom-service-command").value = "";
+    document.getElementById("custom-service-save-btn").textContent = "保存自定义服务";
+}
+
+function renderCustomServiceList() {
+    const wrap = document.getElementById("custom-service-list");
+    if (!customServices.length) {
+        wrap.className = "custom-service-empty";
+        wrap.innerHTML = "暂无自定义服务";
+        return;
+    }
+    wrap.className = "";
+    wrap.innerHTML = customServices.map(service => `
+        <div class="custom-service-row">
+            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
+            <span>${escapeHtml((service.service_type || "vllm").toUpperCase())}</span>
+            <span>:${escapeHtml(service.port || "-")}</span>
+            <code title="${escapeHtml(service.command || "")}">${escapeHtml(service.command || "")}</code>
+            <div class="custom-service-actions">
+                <button class="btn-secondary" onclick="editCustomService('${escapeHtml(service.id)}')">编辑</button>
+                <button class="btn-danger" onclick="deleteCustomService('${escapeHtml(service.id)}')">删除</button>
+            </div>
+        </div>
+    `).join("");
+}
+
+function editCustomService(serviceId) {
+    const service = customServices.find(s => s.id === serviceId);
+    if (!service) {
+        showError("自定义服务不存在");
+        return;
+    }
+    editingCustomServiceId = service.id;
+    document.getElementById("custom-service-id").value = service.id;
+    document.getElementById("custom-service-name").value = service.name || "";
+    document.getElementById("custom-service-type").value = service.service_type || "vllm";
+    document.getElementById("custom-service-port").value = service.port || 8085;
+    document.getElementById("custom-service-command").value = service.command || "";
+    document.getElementById("custom-service-save-btn").textContent = "更新自定义服务";
+    toggleCustomServiceForm(true);
 }
 
 async function saveCustomService() {
+    const id = document.getElementById("custom-service-id").value || editingCustomServiceId;
     const name = document.getElementById("custom-service-name").value.trim();
     const service_type = document.getElementById("custom-service-type").value;
     const port = parseInt(document.getElementById("custom-service-port").value) || 8085;
@@ -741,10 +848,26 @@ async function saveCustomService() {
         return;
     }
     try {
-        await api("POST", "/api/custom-services", { name, service_type, port, command });
-        document.getElementById("custom-service-name").value = "";
-        document.getElementById("custom-service-command").value = "";
+        const payload = { name, service_type, port, command };
+        if (id) payload.id = id;
+        await api("POST", "/api/custom-services", payload);
         toggleCustomServiceForm(false);
+        await loadModels();
+    } catch (e) {}
+}
+
+async function deleteCustomService(serviceId) {
+    const service = customServices.find(s => s.id === serviceId);
+    const label = service ? service.name : serviceId;
+    if (!confirm(`删除自定义服务 ${label}？`)) {
+        return;
+    }
+    try {
+        await api("DELETE", `/api/custom-services/${encodeURIComponent(serviceId)}`);
+        if (editingCustomServiceId === serviceId) {
+            resetCustomServiceForm();
+            toggleCustomServiceForm(false);
+        }
         await loadModels();
     } catch (e) {}
 }
