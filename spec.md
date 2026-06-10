@@ -203,6 +203,7 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 5. stdout/stderr 重定向到 `logs/services/<type>-<name>-<port>-<timestamp>.log`
 6. 自定义服务同样写入 `_managed_processes`，可在进程表中 Open / Stop / Restart
 7. 已注册自定义服务可在启动区直接编辑或删除，编辑时复用原 service_id 覆盖注册表记录
+8. 点击 Start 后前端禁用按钮并显示启动中提示，启动成功后展示 PID / Port 并自动切换到新进程日志
 
 **服务日志：**
 - 每个受管进程都有独立 `log_file`
@@ -220,7 +221,8 @@ _DownloadTqdm             # 自定义 tqdm 类，将进度写入全局变量
 **停止服务：**
 1. 表格行 Stop 传入 PID，只停止对应受管实例，不清空日志
 2. 不传 PID 时停止全部受管实例，并清空服务日志文件
-3. terminate 进程 → 等待 3 秒 → kill
+3. 停止时递归处理受管父进程及其所有子进程，兼容 `conda run` / vLLM wrapper
+4. terminate 进程树 → 等待 3 秒 → kill 仍存活的进程
 
 **GPU 监控：**
 1. 调用 `nvidia-smi --query-gpu=index,name,driver_version,uuid,pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits`

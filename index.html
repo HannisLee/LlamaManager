@@ -189,6 +189,19 @@
             color: #7d8ba3;
             font-size: 0.88em;
         }
+        .start-feedback {
+            display: none;
+            margin-top: 10px;
+            padding: 8px 10px;
+            border: 1px solid #2f3b52;
+            border-radius: 4px;
+            background: #101b32;
+            color: #b7c7df;
+            font-size: 0.9em;
+        }
+        .start-feedback strong {
+            color: #e5eefc;
+        }
 
         /* 日志区域 */
         .log-area {
@@ -520,6 +533,7 @@
             <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
             <button class="btn-secondary" onclick="toggleCustomServiceForm()">添加自定义服务</button>
         </div>
+        <div id="start-feedback" class="start-feedback"></div>
         <div id="custom-service-form" class="form-grid hidden" style="margin-top:14px; border-top:1px solid #2f3b52; padding-top:14px;">
             <input type="hidden" id="custom-service-id">
 
@@ -1096,7 +1110,14 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 
 async function startServer() {
     const model = document.getElementById("start-model").value;
+    if (!model) {
+        showError("请选择要启动的模型或自定义服务");
+        return;
+    }
     const isCustom = model.startsWith("custom:");
+    const startBtn = document.getElementById("btn-start");
+    const feedback = document.getElementById("start-feedback");
+    const originalText = startBtn.textContent;
     const body = {
         model,
         host: "0.0.0.0",
@@ -1110,11 +1131,26 @@ async function startServer() {
     }
 
     try {
-        await api("POST", "/api/start", body);
-        loadGpuStatus();
-        loadManagedProcesses();
-        loadLogs();
-    } catch (e) {}
+        startBtn.disabled = true;
+        startBtn.textContent = "Starting...";
+        feedback.style.display = "block";
+        feedback.textContent = isCustom ? "自定义服务启动中，vLLM 加载模型可能需要几十秒..." : "服务启动中...";
+        const result = await api("POST", "/api/start", body);
+        feedback.innerHTML = `<strong>已提交启动</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
+        await loadGpuStatus();
+        await loadManagedProcesses();
+        const logSelect = document.getElementById("log-process-select");
+        if (result.pid) {
+            logSelect.value = String(result.pid);
+        }
+        await loadLogs();
+    } catch (e) {
+        feedback.style.display = "block";
+        feedback.textContent = "启动失败，请查看顶部错误提示。";
+    } finally {
+        startBtn.disabled = false;
+        startBtn.textContent = originalText;
+    }
 }
 
 async function stopServer() {

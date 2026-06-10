@@ -950,7 +950,27 @@ def _stop_one_process(item: dict) -> str:
     """停止单个受管进程"""
     proc = item["process"]
     info = f"PID {proc.pid}"
-    if _is_process_running(proc):
+    processes = []
+    try:
+        root = psutil.Process(proc.pid)
+        processes = root.children(recursive=True) + [root]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+    if processes:
+        for child in processes:
+            try:
+                child.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        gone, alive = psutil.wait_procs(processes, timeout=3)
+        for child in alive:
+            try:
+                child.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        psutil.wait_procs(alive, timeout=2)
+    elif _is_process_running(proc):
         proc.terminate()
         try:
             proc.wait(timeout=3)
@@ -958,6 +978,8 @@ def _stop_one_process(item: dict) -> str:
             proc.kill()
             proc.wait(timeout=2)
     _managed_processes.pop(proc.pid, None)
+    if proc.pid in _managed_process_records:
+        _managed_process_records[proc.pid]["running"] = False
     return info
 
 
@@ -1281,6 +1303,8 @@ async def start_server(body: dict = None):
     result = {
         "ok": True,
         "pid": proc.pid,
+        "host": host,
+        "port": port,
         "url": f"http://{host}:{port}",
         "proxy_url": f"/llama-process/{proc.pid}/",
         "command": " ".join(cmd),
