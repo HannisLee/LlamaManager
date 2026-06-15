@@ -753,6 +753,7 @@ async function loadModels() {
     const serviceData = await api("GET", "/api/custom-services");
     customServices = serviceData.services || [];
     const select = document.getElementById("start-model");
+    const previousValue = select.value;
     // 清空选项
     select.innerHTML = "";
     if (data.models.length === 0 && customServices.length === 0) {
@@ -780,7 +781,12 @@ async function loadModels() {
             select.appendChild(opt);
         });
     }
-    onModelChange();
+    const hasPreviousValue = previousValue && Array.from(select.options).some(opt => opt.value === previousValue);
+    if (hasPreviousValue) {
+        select.value = previousValue;
+    } else {
+        onModelChange();
+    }
     renderCustomServiceList();
 }
 
