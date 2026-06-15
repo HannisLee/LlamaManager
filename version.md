@@ -171,3 +171,11 @@
 - 前端文件名输入框 placeholder 改为提示“留空则全量下载整个仓库”
 - 强制重新下载复选框对全量下载同样生效（`snapshot_download` 的 `force_download`）
 - spec.md 同步更新下载分支和全量下载设计
+
+## v0.1.5 — 2026-06-15
+
+- 新增 `managed_processes.json` 持久化 LlamaManager 启动过的受管进程记录
+- 后台服务重启后按 PID 和 `process_create_time` 恢复仍存活的受管进程，避免 PID 复用误识别
+- 恢复后的受管进程继续支持 Open / Stop / Restart、日志查看和 GPU 子进程归属
+- 受管进程命令新增 `command_tokens` 保存，避免带空格参数在重启恢复时被错误拆分
+- spec.md 同步更新受管进程持久化和恢复流程

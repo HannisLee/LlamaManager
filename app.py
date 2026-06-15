@@ -30,6 +30,7 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
 GPU_HISTORY_PATH = APP_DIR / "gpu_history.json"
 CUSTOM_SERVICES_PATH = APP_DIR / "custom_services.json"
+MANAGED_PROCESS_RECORDS_PATH = APP_DIR / "managed_processes.json"
 
 # ── 全局进程状态 ──────────────────────────────────────────
 _current_process: Optional[subprocess.Popen] = None
@@ -39,6 +40,7 @@ _current_port: Optional[int] = None
 _current_host: Optional[str] = None
 _managed_processes: dict[int, dict] = {}
 _managed_process_records: dict[int, dict] = {}
+_managed_process_records_loaded: bool = False
 _process_lock = threading.Lock()
 
 # ── GPU 历史状态 ───────────────────────────────────────
@@ -215,6 +217,147 @@ def _save_custom_services(data: dict):
         except OSError:
             pass
         raise
+
+
+def _load_managed_process_records_file() -> dict[int, dict]:
+    """读取受管进程持久化记录，格式: {pid: record}"""
+    try:
+        if MANAGED_PROCESS_RECORDS_PATH.exists():
+            data = json.loads(MANAGED_PROCESS_RECORDS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                records = data.get("processes", [])
+            elif isinstance(data, list):
+                records = data
+            else:
+                records = []
+            result = {}
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    pid = int(record.get("pid"))
+                except (TypeError, ValueError):
+                    continue
+                result[pid] = record
+            return result
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_managed_process_records_file():
+    """原子写入受管进程持久化记录"""
+    records = sorted(
+        _managed_process_records.values(),
+        key=lambda item: item.get("started_at") or 0,
+        reverse=True,
+    )
+    payload = {"processes": records}
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(APP_DIR), suffix=".managed_processes.tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, str(MANAGED_PROCESS_RECORDS_PATH))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _process_create_time(pid: int) -> Optional[float]:
+    """读取进程创建时间，用于避免服务重启后误认复用 PID"""
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        return None
+
+
+def _process_matches_record(proc: psutil.Process, record: dict) -> bool:
+    """判断当前 PID 是否仍是记录中的受管进程"""
+    expected = record.get("process_create_time")
+    if expected is None:
+        return False
+    try:
+        return abs(float(proc.create_time()) - float(expected)) < 1
+    except (TypeError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
+def _record_from_item(pid: int, item: dict, running: bool = True) -> dict:
+    """从内存受管进程生成可持久化记录"""
+    model_value = item.get("model") or ""
+    display_name = item.get("display_name") or Path(model_value).name
+    return {
+        "pid": pid,
+        "model": item.get("model"),
+        "model_name": display_name,
+        "display_name": display_name,
+        "service_kind": item.get("service_kind", "llama"),
+        "service_type": item.get("service_type", "llama"),
+        "service_id": item.get("service_id"),
+        "host": item.get("host"),
+        "port": item.get("port"),
+        "url": f"http://{item.get('host')}:{item.get('port')}",
+        "proxy_url": f"/llama-process/{pid}/",
+        "command": shlex.join(item.get("command", [])),
+        "command_tokens": item.get("command", []),
+        "extra_args": item.get("extra_args", ""),
+        "gpu_indexes": item.get("gpu_indexes", []),
+        "log_file": item.get("log_file"),
+        "started_at": item.get("started_at"),
+        "process_create_time": item.get("process_create_time"),
+        "running": running,
+    }
+
+
+def _restore_managed_process_records():
+    """从持久化记录恢复仍存活的受管进程"""
+    global _managed_process_records_loaded
+    if _managed_process_records_loaded:
+        return
+
+    records = _load_managed_process_records_file()
+    for pid, record in records.items():
+        record = dict(record)
+        record["pid"] = pid
+        record["running"] = False
+        try:
+            proc = psutil.Process(pid)
+            if _process_matches_record(proc, record):
+                command = record.get("command_tokens")
+                if not isinstance(command, list) or not command:
+                    command_text = record.get("command", "")
+                    try:
+                        command = shlex.split(command_text) if command_text else []
+                    except ValueError:
+                        command = []
+                _managed_processes[pid] = {
+                    "process": proc,
+                    "command": command,
+                    "model": record.get("model"),
+                    "display_name": record.get("display_name") or record.get("model_name"),
+                    "service_kind": record.get("service_kind", "llama"),
+                    "service_type": record.get("service_type", "llama"),
+                    "service_id": record.get("service_id"),
+                    "host": record.get("host", "0.0.0.0"),
+                    "port": record.get("port"),
+                    "extra_args": record.get("extra_args", ""),
+                    "gpu_indexes": record.get("gpu_indexes", []),
+                    "log_file": record.get("log_file"),
+                    "started_at": record.get("started_at"),
+                    "process_create_time": record.get("process_create_time"),
+                }
+                record["running"] = True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+            pass
+        _managed_process_records[pid] = record
+
+    _managed_process_records_loaded = True
+    _sync_current_from_managed(persist=False)
 
 
 def _command_tokens(command: str) -> list:
@@ -572,15 +715,25 @@ def _get_process_detail(pid: int) -> dict:
     return detail
 
 
-def _is_process_running(proc: subprocess.Popen) -> bool:
-    """判断 Popen 进程是否仍在运行"""
-    return proc is not None and proc.poll() is None
+def _is_process_running(proc) -> bool:
+    """判断 Popen 或 psutil.Process 是否仍在运行"""
+    if proc is None:
+        return False
+    if isinstance(proc, subprocess.Popen):
+        return proc.poll() is None
+    if isinstance(proc, psutil.Process):
+        try:
+            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+    return False
 
 
-def _sync_current_from_managed():
+def _sync_current_from_managed(persist: bool = True):
     """用最新存活的受管实例同步旧版单实例状态"""
     global _current_process, _current_command, _current_model, _current_port, _current_host
 
+    _restore_managed_process_records()
     live_items = [
         item for item in _managed_processes.values()
         if _is_process_running(item.get("process"))
@@ -594,12 +747,17 @@ def _sync_current_from_managed():
             _managed_process_records[pid]["running"] = False
         _managed_processes.pop(pid, None)
 
+    for pid, item in _managed_processes.items():
+        _managed_process_records[pid] = _record_from_item(pid, item, running=True)
+
     if not live_items:
         _current_process = None
         _current_command = None
         _current_model = None
         _current_port = None
         _current_host = None
+        if persist:
+            _save_managed_process_records_file()
         return
 
     latest = max(live_items, key=lambda item: item.get("started_at", 0))
@@ -608,6 +766,8 @@ def _sync_current_from_managed():
     _current_model = latest["model"]
     _current_port = latest["port"]
     _current_host = latest["host"]
+    if persist:
+        _save_managed_process_records_file()
 
 
 def _managed_process_snapshot() -> dict[int, dict]:
@@ -619,11 +779,13 @@ def _managed_process_snapshot() -> dict[int, dict]:
             proc = item["process"]
             if not _is_process_running(proc):
                 continue
+            model_value = item.get("model") or ""
+            display_name = item.get("display_name") or Path(model_value).name
             result[pid] = {
                 "pid": pid,
-                "model": item["model"],
-                "model_name": item.get("display_name") or Path(item["model"]).name,
-                "display_name": item.get("display_name") or Path(item["model"]).name,
+                "model": item.get("model"),
+                "model_name": display_name,
+                "display_name": display_name,
                 "service_kind": item.get("service_kind", "llama"),
                 "service_type": item.get("service_type", "llama"),
                 "service_id": item.get("service_id"),
@@ -631,11 +793,13 @@ def _managed_process_snapshot() -> dict[int, dict]:
                 "port": item["port"],
                 "url": f"http://{item['host']}:{item['port']}",
                 "proxy_url": f"/llama-process/{pid}/",
-                "command": " ".join(item["command"]),
+                "command": shlex.join(item["command"]),
+                "command_tokens": item["command"],
                 "extra_args": item.get("extra_args", ""),
                 "gpu_indexes": item.get("gpu_indexes", []),
                 "log_file": item.get("log_file"),
                 "started_at": item.get("started_at"),
+                "process_create_time": item.get("process_create_time"),
                 "running": True,
             }
         return result
@@ -981,7 +1145,7 @@ def _stop_one_process(item: dict) -> str:
         proc.terminate()
         try:
             proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, psutil.TimeoutExpired):
             proc.kill()
             proc.wait(timeout=2)
     _managed_processes.pop(proc.pid, None)
@@ -1118,10 +1282,7 @@ async def get_status():
     """获取当前 llama-server 运行状态"""
     with _process_lock:
         _sync_current_from_managed()
-        running = (
-            _current_process is not None
-            and _current_process.poll() is None
-        )
+        running = _is_process_running(_current_process)
         url = None
         if running and _current_host and _current_port:
             url = f"http://{_current_host}:{_current_port}"
@@ -1129,7 +1290,7 @@ async def get_status():
         result = {
             "running": running,
             "pid": _current_process.pid if running else None,
-            "command": " ".join(_current_command) if running and _current_command else None,
+            "command": shlex.join(_current_command) if running and _current_command else None,
             "model": _current_model if running else None,
             "host": _current_host if running else None,
             "port": _current_port if running else None,
@@ -1262,6 +1423,7 @@ async def start_server(body: dict = None):
                 detail=f"启动失败: {str(e)}"
             )
 
+        process_create_time = _process_create_time(proc.pid)
         _managed_processes[proc.pid] = {
             "process": proc,
             "command": cmd,
@@ -1276,26 +1438,10 @@ async def start_server(body: dict = None):
             "gpu_indexes": gpu_indexes,
             "log_file": str(log_path),
             "started_at": time.time(),
+            "process_create_time": process_create_time,
         }
-        _managed_process_records[proc.pid] = {
-            "pid": proc.pid,
-            "model": model_for_record,
-            "model_name": display_name,
-            "display_name": display_name,
-            "service_kind": service_kind,
-            "service_type": service_type,
-            "service_id": service_id,
-            "host": host,
-            "port": port,
-            "url": f"http://{host}:{port}",
-            "proxy_url": f"/llama-process/{proc.pid}/",
-            "command": " ".join(cmd),
-            "extra_args": extra_args if service_kind == "llama" else "",
-            "gpu_indexes": gpu_indexes,
-            "log_file": str(log_path),
-            "started_at": _managed_processes[proc.pid]["started_at"],
-            "running": True,
-        }
+        _managed_process_records[proc.pid] = _record_from_item(proc.pid, _managed_processes[proc.pid], running=True)
+        _save_managed_process_records_file()
 
         _current_process = proc
         _current_command = cmd

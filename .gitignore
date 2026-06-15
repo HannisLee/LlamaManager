@@ -1,5 +1,6 @@
 gpu_history.json
 custom_services.json
+managed_processes.json
 __pycache__/
 *.pyc
 .venv/
