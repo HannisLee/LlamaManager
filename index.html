@@ -573,7 +573,7 @@
             <label for="dl-repo">仓库</label>
             <input type="text" id="dl-repo" placeholder="tencent/Hy-MT2-7B-GGUF">
             <label for="dl-filename">文件名</label>
-            <input type="text" id="dl-filename" placeholder="HY-MT2-7B-Q8_0.gguf">
+            <input type="text" id="dl-filename" placeholder="留空则全量下载整个仓库">
         </div>
         <div style="margin-top:10px; display:flex; align-items:center; gap:12px;">
             <button class="btn-success" id="btn-download" onclick="startDownload()">Download</button>
@@ -1244,8 +1244,8 @@ async function startDownload() {
     const repo = document.getElementById("dl-repo").value.trim();
     const filename = document.getElementById("dl-filename").value.trim();
     const force_download = document.getElementById("dl-force").checked;
-    if (!repo || !filename) {
-        showError("请输入仓库名和文件名");
+    if (!repo) {
+        showError("请输入仓库名");
         return;
     }
     try {
@@ -1272,6 +1272,11 @@ async function loadDownloadStatus() {
     } catch (e) {}
 }
 
+function downloadLabel(data) {
+    const lbl = data.filename ? `${data.repo || ""} / ${data.filename}` : `${data.repo || ""} 全量`;
+    return data.target_dir ? `${lbl} → ${data.target_dir}` : lbl;
+}
+
 function updateDownloadUI(data) {
     const badge = document.getElementById("dl-status-badge");
     const text = document.getElementById("dl-status-text");
@@ -1285,7 +1290,7 @@ function updateDownloadUI(data) {
     if (data.running) {
         badge.textContent = "Downloading";
         badge.className = "badge badge-running";
-        text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
+        text.textContent = downloadLabel(data);
         btnDl.disabled = true;
         btnCancel.disabled = false;
         // 更新进度条
@@ -1303,7 +1308,7 @@ function updateDownloadUI(data) {
     } else if (data.done) {
         badge.textContent = "Done";
         badge.className = "badge badge-running";
-        text.textContent = `${data.repo || ""} / ${data.filename || ""}`;
+        text.textContent = downloadLabel(data);
         btnDl.disabled = false;
         btnCancel.disabled = true;
         // 完成时显示100%

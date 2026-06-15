@@ -159,3 +159,15 @@
 - 未选择模型或自定义服务时，前端直接提示错误
 - 停止服务时递归终止受管进程树，避免 `conda run` / vLLM 子进程残留占用端口
 - spec.md 同步更新启动反馈流程
+
+## v0.1.4 — 2026-06-15
+
+- 下载模型新增仓库全量下载：文件名留空时下载整个仓库到 `model_dir/owner--repo/`（`/` 替换为 `--`）
+- 全量下载使用 `huggingface_hub.snapshot_download`，文件保持仓库结构存放
+- `_DownloadTqdm` 改造：用 `unit=="B"` 区分字节进度条，避免 `snapshot_download` 的文件数进度条污染全局变量
+- 下载总大小改为预获取（单文件取该文件 size，全量求和 siblings size），进度条对两种场景都准确
+- 文件名校验：filename 为空时跳过 `.gguf` 校验，支持全量下载
+- `/api/download` 与 `/api/download/status` 新增 `target_dir` 字段，前端显示下载目标目录
+- 前端文件名输入框 placeholder 改为提示“留空则全量下载整个仓库”
+- 强制重新下载复选框对全量下载同样生效（`snapshot_download` 的 `force_download`）
+- spec.md 同步更新下载分支和全量下载设计

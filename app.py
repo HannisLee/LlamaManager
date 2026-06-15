@@ -51,6 +51,7 @@ _download_running: bool = False
 _download_done: bool = False
 _download_repo: Optional[str] = None
 _download_filename: Optional[str] = None
+_download_target_dir: Optional[str] = None
 _download_error: Optional[str] = None
 _download_lock = threading.Lock()
 
@@ -60,18 +61,24 @@ _download_progress_total: int = 0
 
 
 class _DownloadTqdm(_tqdm_module.tqdm):
-    """自定义 tqdm，将下载进度写入全局变量供 API 查询"""
+    """自定义 tqdm，将字节下载进度写入全局变量供 API 查询。
+
+    snapshot_download 内部会创建两个进度条实例：字节进度条（unit='B'）和
+    文件数进度条（thread_map，无 unit='B'）。只追踪前者，避免文件数进度污染。
+    """
 
     def __init__(self, *args, **kwargs):
-        global _download_progress_n, _download_progress_total
+        global _download_progress_n
         super().__init__(*args, **kwargs)
-        _download_progress_total = self.total or 0
-        _download_progress_n = 0
+        self._track = kwargs.get("unit") == "B"
+        if self._track:
+            _download_progress_n = 0
 
     def update(self, n=1):
         global _download_progress_n
         result = super().update(n)
-        _download_progress_n = self.n
+        if self._track:
+            _download_progress_n = self.n
         return result
 
 app = FastAPI(title="LlamaManager")
@@ -1418,7 +1425,8 @@ async def get_logs(pid: Optional[int] = None):
 @app.post("/api/download")
 async def download_model(body: dict = None):
     """从 Hugging Face 下载模型"""
-    global _download_running, _download_done, _download_repo, _download_filename, _download_error
+    global _download_running, _download_done, _download_repo, _download_filename
+    global _download_target_dir, _download_error
     global _download_progress_n, _download_progress_total
 
     if body is None:
@@ -1430,15 +1438,13 @@ async def download_model(body: dict = None):
 
     if not repo:
         raise HTTPException(status_code=400, detail="请输入仓库名")
-    if not filename:
-        raise HTTPException(status_code=400, detail="请输入文件名")
 
     # 校验仓库格式：owner/repo
     if not re.match(r'^[a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+$', repo):
         raise HTTPException(status_code=400, detail="仓库名格式错误，应为 owner/repo（如 tencent/Hy-MT2-7B-GGUF）")
-    # 校验文件名：必须 .gguf 结尾
-    if not re.match(r'^[a-zA-Z0-9_.\-]+\.gguf$', filename):
-        raise HTTPException(status_code=400, detail="文件名格式错误，必须以 .gguf 结尾")
+    # 指定文件名时校验：必须 .gguf 结尾（留空则全量下载整个仓库）
+    if filename and not re.match(r'^[a-zA-Z0-9_.\-]+\.gguf$', filename):
+        raise HTTPException(status_code=400, detail="文件名格式错误，必须以 .gguf 结尾（留空则全量下载）")
 
     with _download_lock:
         # 检查是否正在下载
@@ -1457,52 +1463,77 @@ async def download_model(body: dict = None):
         download_log = APP_DIR / "logs" / "download.log"
         download_log.parent.mkdir(parents=True, exist_ok=True)
 
+        # 全量下载目标目录为 model_dir/owner--repo，单文件为 model_dir
+        if filename:
+            target_dir = model_dir
+        else:
+            target_dir = os.path.join(model_dir, repo.replace("/", "--"))
+        Path(target_dir).mkdir(parents=True, exist_ok=True)
+
         _download_repo = repo
-        _download_filename = filename
+        _download_filename = filename or None
+        _download_target_dir = target_dir
         _download_done = False
         _download_running = True
         _download_error = None
         _download_progress_n = 0
         _download_progress_total = 0
 
-        # 获取远程文件大小
-        remote_size = None
+        # 预获取远程文件总大小
         try:
             from huggingface_hub import HfApi
             api = HfApi()
-            model_info = api.model_info(repo_id=repo, files_metadata=True)
-            for sibling in (model_info.siblings or []):
-                if sibling.rfilename == filename:
-                    remote_size = sibling.size
-                    break
+            if filename:
+                # 单文件：找匹配的 sibling
+                model_info = api.model_info(repo_id=repo, files_metadata=True)
+                for sibling in (model_info.siblings or []):
+                    if sibling.rfilename == filename:
+                        _download_progress_total = sibling.size or 0
+                        break
+            else:
+                # 全量：所有文件大小求和
+                info = api.repo_info(repo_id=repo, files_metadata=True)
+                _download_progress_total = sum(
+                    s.size for s in (info.siblings or []) if s.size
+                )
         except Exception:
             pass
 
         def _do_download():
             """后台线程执行下载"""
             global _download_done, _download_running, _download_error
-            global _download_progress_n, _download_progress_total
             try:
-                from huggingface_hub import hf_hub_download
-                size_info = f" ({remote_size / 1024 / 1024:.1f} MB)" if remote_size else ""
-                log_msg = f"[{repo}/{filename}] 开始下载到 {model_dir}{size_info}\n"
+                tag = f"[{repo}/{filename}]" if filename else f"[{repo} 全量]"
+                size_info = f" ({_download_progress_total / 1024 / 1024:.1f} MB)" if _download_progress_total else ""
+                log_msg = f"{tag} 开始下载到 {target_dir}{size_info}\n"
                 download_log.write_text(log_msg, encoding="utf-8")
 
-                path = hf_hub_download(
-                    repo_id=repo,
-                    filename=filename,
-                    local_dir=model_dir,
-                    force_download=force_download,
-                    tqdm_class=_DownloadTqdm,
-                )
+                if filename:
+                    from huggingface_hub import hf_hub_download
+                    path = hf_hub_download(
+                        repo_id=repo,
+                        filename=filename,
+                        local_dir=target_dir,
+                        force_download=force_download,
+                        tqdm_class=_DownloadTqdm,
+                    )
+                else:
+                    from huggingface_hub import snapshot_download
+                    path = snapshot_download(
+                        repo_id=repo,
+                        local_dir=target_dir,
+                        force_download=force_download,
+                        tqdm_class=_DownloadTqdm,
+                    )
 
                 with open(download_log, "a", encoding="utf-8") as f:
-                    f.write(f"[{repo}/{filename}] 下载完成: {path}\n")
+                    f.write(f"{tag} 下载完成: {path}\n")
                 _download_done = True
             except Exception as e:
                 _download_error = str(e)
+                tag = f"[{repo}/{filename}]" if filename else f"[{repo} 全量]"
                 with open(download_log, "a", encoding="utf-8") as f:
-                    f.write(f"[{repo}/{filename}] 下载失败: {e}\n")
+                    f.write(f"{tag} 下载失败: {e}\n")
                 _download_done = True
             finally:
                 _download_running = False
@@ -1512,7 +1543,8 @@ async def download_model(body: dict = None):
         return JSONResponse({
             "ok": True,
             "repo": repo,
-            "filename": filename,
+            "filename": filename or None,
+            "target_dir": target_dir,
             "message": "下载已启动",
         })
 
@@ -1537,6 +1569,7 @@ async def download_status():
             "done": _download_done,
             "repo": _download_repo,
             "filename": _download_filename,
+            "target_dir": _download_target_dir,
             "error": _download_error,
             "progress": progress,
         })
