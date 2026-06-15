@@ -1242,6 +1242,36 @@ async def get_models():
     return JSONResponse({"models": models, "model_dir": model_dir})
 
 
+@app.get("/api/model-repositories")
+async def get_model_repositories():
+    """扫描 model_dir 下的全量仓库目录"""
+    settings = _load_settings()
+    model_dir = settings.get("model_dir", "")
+    repositories = []
+
+    if model_dir and Path(model_dir).is_dir():
+        for p in sorted(Path(model_dir).iterdir()):
+            if not p.is_dir() or p.name.startswith("."):
+                continue
+            try:
+                stat = p.stat()
+                repositories.append({
+                    "name": p.name,
+                    "display_name": p.name.replace("--", "/"),
+                    "path": str(p),
+                    "modified": stat.st_mtime,
+                    "has_config": (p / "config.json").is_file(),
+                    "has_model_files": any(
+                        child.is_file() and child.suffix.lower() in {".safetensors", ".bin", ".gguf"}
+                        for child in p.iterdir()
+                    ),
+                })
+            except OSError:
+                pass
+
+    return JSONResponse({"repositories": repositories, "model_dir": model_dir})
+
+
 @app.get("/api/custom-services")
 async def get_custom_services():
     """读取自定义服务注册表"""

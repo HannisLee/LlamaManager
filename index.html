@@ -531,30 +531,41 @@
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
-            <button class="btn-secondary" onclick="toggleCustomServiceForm()">添加自定义服务</button>
         </div>
         <div id="start-feedback" class="start-feedback"></div>
-        <div id="custom-service-form" class="form-grid hidden" style="margin-top:14px; border-top:1px solid #2f3b52; padding-top:14px;">
+    </div>
+
+    <!-- 第三块：vLLM 服务 -->
+    <div class="card">
+        <h2>vLLM 服务</h2>
+        <div id="custom-service-form" class="form-grid">
+            <label for="vllm-repo">仓库模型</label>
+            <select id="vllm-repo" onchange="onVllmRepositoryChange()">
+                <option value="">-- 请先扫描仓库模型 --</option>
+            </select>
+            <div id="vllm-repo-path" class="full-width custom-service-empty">暂无可用仓库模型</div>
+
             <input type="hidden" id="custom-service-id">
 
             <label for="custom-service-name">服务名</label>
-            <input type="text" id="custom-service-name" placeholder="Qwen3-ASR-1.7B">
+            <input type="text" id="custom-service-name" placeholder="Qwen/Qwen3.5">
 
             <label for="custom-service-command">启动命令</label>
-            <textarea id="custom-service-command" rows="3" placeholder="conda run -n qwen3-asr qwen-asr-serve /home/lihan/models/Qwen3-ASR-1.7B --gpu-memory-utilization 0.8 --host 0.0.0.0 --port 8085"></textarea>
+            <textarea id="custom-service-command" rows="3" placeholder="python -m vllm.entrypoints.openai.api_server --model /path/to/repo --host 0.0.0.0 --port 8085"></textarea>
 
             <div class="full-width btn-group">
-                <button class="btn-primary" id="custom-service-save-btn" onclick="saveCustomService()">保存自定义服务</button>
-                <button class="btn-secondary" onclick="toggleCustomServiceForm(false)">取消</button>
+                <button class="btn-primary" id="custom-service-save-btn" onclick="saveCustomService()">保存 vLLM 服务</button>
+                <button class="btn-secondary" onclick="resetCustomServiceForm()">取消编辑</button>
+                <button class="btn-secondary" onclick="loadVllmRepositories()">Rescan Repositories</button>
             </div>
         </div>
         <div class="custom-service-list">
-            <h3>已注册自定义服务</h3>
-            <div id="custom-service-list" class="custom-service-empty">暂无自定义服务</div>
+            <h3>已注册 vLLM / 自定义服务</h3>
+            <div id="custom-service-list" class="custom-service-empty">暂无已注册服务</div>
         </div>
     </div>
 
-    <!-- 第三块：服务日志 -->
+    <!-- 第四块：服务日志 -->
     <div class="card">
         <h2>服务日志</h2>
         <div class="btn-group" style="margin-bottom:10px; align-items:center;">
@@ -566,7 +577,7 @@
         <textarea id="log-area" class="log-area" readonly placeholder="暂无日志"></textarea>
     </div>
 
-    <!-- 第四块：下载模型 -->
+    <!-- 第五块：下载模型 -->
     <div class="card">
         <h2>下载模型</h2>
         <div class="form-grid">
@@ -598,7 +609,7 @@
         </div>
     </div>
 
-    <!-- 第五块：下载日志 -->
+    <!-- 第六块：下载日志 -->
     <div class="card">
         <h2>下载日志</h2>
         <div class="btn-group" style="margin-bottom:10px">
@@ -607,7 +618,7 @@
         <textarea id="dl-log-area" class="log-area" readonly placeholder="暂无下载日志"></textarea>
     </div>
 
-    <!-- 第六块：设置 -->
+    <!-- 第七块：设置 -->
     <div class="card">
         <h2>设置</h2>
         <div class="form-grid">
@@ -630,6 +641,7 @@
 let currentSettings = {};
 let currentGpuIndexes = [];
 let customServices = [];
+let modelRepositories = [];
 let managedProcessRecords = [];
 let editingCustomServiceId = "";
 
@@ -708,17 +720,6 @@ async function loadModelParams() {
 function onModelChange() {
     const model = document.getElementById("start-model").value;
     const extra = document.getElementById("start-extra");
-    const isCustom = model.startsWith("custom:");
-    document.getElementById("start-port-label").classList.toggle("hidden", isCustom);
-    document.getElementById("start-port").classList.toggle("hidden", isCustom);
-    document.getElementById("start-extra-label").classList.toggle("hidden", isCustom);
-    extra.classList.toggle("hidden", isCustom);
-    if (isCustom) {
-        extra.value = "";
-        extra.disabled = true;
-        extra.placeholder = "自定义服务使用完整启动命令，不使用 Extra Args";
-        return;
-    }
     extra.disabled = false;
     extra.placeholder = "-c 4096 --n-gpu-layers 99 --threads 8";
     const params = modelParams[model];
@@ -750,28 +751,20 @@ async function saveSettings() {
 
 async function loadModels() {
     const data = await api("GET", "/api/models");
-    const serviceData = await api("GET", "/api/custom-services");
-    customServices = serviceData.services || [];
     const select = document.getElementById("start-model");
     const previousValue = select.value;
     // 清空选项
     select.innerHTML = "";
-    if (data.models.length === 0 && customServices.length === 0) {
+    if (data.models.length === 0) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "-- 未找到模型或自定义服务 --";
+        opt.textContent = "-- 未找到 GGUF 模型 --";
         select.appendChild(opt);
     } else {
         const placeholder = document.createElement("option");
         placeholder.value = "";
         placeholder.textContent = "-- 选择模型 --";
         select.appendChild(placeholder);
-        customServices.forEach(s => {
-            const opt = document.createElement("option");
-            opt.value = `custom:${s.id}`;
-            opt.textContent = `${s.name} (:${s.port})`;
-            select.appendChild(opt);
-        });
         data.models.forEach(m => {
             const opt = document.createElement("option");
             opt.value = m.path;
@@ -787,31 +780,76 @@ async function loadModels() {
     } else {
         onModelChange();
     }
-    renderCustomServiceList();
-}
-
-function toggleCustomServiceForm(force) {
-    const form = document.getElementById("custom-service-form");
-    const show = force === undefined ? form.classList.contains("hidden") : force;
-    form.classList.toggle("hidden", !show);
-    if (!show) {
-        resetCustomServiceForm();
-    }
 }
 
 function resetCustomServiceForm() {
     editingCustomServiceId = "";
     document.getElementById("custom-service-id").value = "";
+    document.getElementById("vllm-repo").value = "";
     document.getElementById("custom-service-name").value = "";
     document.getElementById("custom-service-command").value = "";
-    document.getElementById("custom-service-save-btn").textContent = "保存自定义服务";
+    document.getElementById("custom-service-save-btn").textContent = "保存 vLLM 服务";
+    onVllmRepositoryChange();
+}
+
+async function loadVllmRepositories() {
+    const data = await api("GET", "/api/model-repositories");
+    modelRepositories = data.repositories || [];
+    const select = document.getElementById("vllm-repo");
+    const previousValue = select.value;
+    select.innerHTML = "";
+    if (!modelRepositories.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "-- 未找到全量仓库目录 --";
+        select.appendChild(opt);
+    } else {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "-- 选择仓库模型 --";
+        select.appendChild(placeholder);
+        modelRepositories.forEach(repo => {
+            const opt = document.createElement("option");
+            opt.value = repo.path;
+            opt.textContent = repo.display_name || repo.name;
+            select.appendChild(opt);
+        });
+    }
+    if (previousValue && Array.from(select.options).some(opt => opt.value === previousValue)) {
+        select.value = previousValue;
+    }
+    onVllmRepositoryChange();
+}
+
+function onVllmRepositoryChange() {
+    const selectedPath = document.getElementById("vllm-repo").value;
+    const repo = modelRepositories.find(item => item.path === selectedPath);
+    const pathEl = document.getElementById("vllm-repo-path");
+    const nameInput = document.getElementById("custom-service-name");
+    const commandInput = document.getElementById("custom-service-command");
+    if (!repo) {
+        pathEl.textContent = modelRepositories.length ? "未选择仓库模型" : "暂无可用仓库模型";
+        commandInput.placeholder = "python -m vllm.entrypoints.openai.api_server --model /path/to/repo --host 0.0.0.0 --port 8085";
+        return;
+    }
+    pathEl.textContent = repo.path;
+    if (!editingCustomServiceId && !nameInput.value.trim()) {
+        nameInput.value = repo.display_name || repo.name;
+    }
+    commandInput.placeholder = `python -m vllm.entrypoints.openai.api_server --model ${repo.path} --host 0.0.0.0 --port 8085`;
+}
+
+async function loadCustomServices() {
+    const serviceData = await api("GET", "/api/custom-services");
+    customServices = serviceData.services || [];
+    renderCustomServiceList();
 }
 
 function renderCustomServiceList() {
     const wrap = document.getElementById("custom-service-list");
     if (!customServices.length) {
         wrap.className = "custom-service-empty";
-        wrap.innerHTML = "暂无自定义服务";
+        wrap.innerHTML = "暂无已注册服务";
         return;
     }
     wrap.className = "";
@@ -821,6 +859,7 @@ function renderCustomServiceList() {
             <span>:${escapeHtml(service.port || "-")}</span>
             <code title="${escapeHtml(service.command || "")}">${escapeHtml(service.command || "")}</code>
             <div class="custom-service-actions">
+                <button class="btn-success" onclick="startCustomService('${escapeHtml(service.id)}')">启动</button>
                 <button class="btn-secondary" onclick="editCustomService('${escapeHtml(service.id)}')">编辑</button>
                 <button class="btn-danger" onclick="deleteCustomService('${escapeHtml(service.id)}')">删除</button>
             </div>
@@ -838,8 +877,12 @@ function editCustomService(serviceId) {
     document.getElementById("custom-service-id").value = service.id;
     document.getElementById("custom-service-name").value = service.name || "";
     document.getElementById("custom-service-command").value = service.command || "";
-    document.getElementById("custom-service-save-btn").textContent = "更新自定义服务";
-    toggleCustomServiceForm(true);
+    const repo = modelRepositories.find(item => service.command && service.command.includes(item.path));
+    if (repo) {
+        document.getElementById("vllm-repo").value = repo.path;
+    }
+    document.getElementById("custom-service-save-btn").textContent = "更新 vLLM 服务";
+    onVllmRepositoryChange();
 }
 
 async function saveCustomService() {
@@ -851,27 +894,53 @@ async function saveCustomService() {
         return;
     }
     try {
-        const payload = { name, command };
+        const payload = { name, command, service_type: "vllm" };
         if (id) payload.id = id;
         await api("POST", "/api/custom-services", payload);
-        toggleCustomServiceForm(false);
-        await loadModels();
+        resetCustomServiceForm();
+        await loadCustomServices();
+    } catch (e) {}
+}
+
+async function startCustomService(serviceId) {
+    const service = customServices.find(s => s.id === serviceId);
+    if (!service) {
+        showError("服务不存在");
+        return;
+    }
+    try {
+        const result = await api("POST", "/api/start", {
+            model: `custom:${serviceId}`,
+            host: "0.0.0.0",
+            auto_kill_port: document.getElementById("start-auto-kill").checked,
+            incremental_start: document.getElementById("start-incremental").checked,
+            gpu_indexes: selectedGpuIndexes(),
+        });
+        const feedback = document.getElementById("start-feedback");
+        feedback.style.display = "block";
+        feedback.innerHTML = `<strong>已提交 vLLM 服务</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
+        await loadGpuStatus();
+        await loadManagedProcesses();
+        const logSelect = document.getElementById("log-process-select");
+        if (result.pid) {
+            logSelect.value = String(result.pid);
+        }
+        await loadLogs();
     } catch (e) {}
 }
 
 async function deleteCustomService(serviceId) {
     const service = customServices.find(s => s.id === serviceId);
     const label = service ? service.name : serviceId;
-    if (!confirm(`删除自定义服务 ${label}？`)) {
+    if (!confirm(`删除服务 ${label}？`)) {
         return;
     }
     try {
         await api("DELETE", `/api/custom-services/${encodeURIComponent(serviceId)}`);
         if (editingCustomServiceId === serviceId) {
             resetCustomServiceForm();
-            toggleCustomServiceForm(false);
         }
-        await loadModels();
+        await loadCustomServices();
     } catch (e) {}
 }
 
@@ -1117,10 +1186,9 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 async function startServer() {
     const model = document.getElementById("start-model").value;
     if (!model) {
-        showError("请选择要启动的模型或自定义服务");
+        showError("请选择要启动的 GGUF 模型");
         return;
     }
-    const isCustom = model.startsWith("custom:");
     const startBtn = document.getElementById("btn-start");
     const feedback = document.getElementById("start-feedback");
     const originalText = startBtn.textContent;
@@ -1130,17 +1198,15 @@ async function startServer() {
         auto_kill_port: document.getElementById("start-auto-kill").checked,
         incremental_start: document.getElementById("start-incremental").checked,
         gpu_indexes: selectedGpuIndexes(),
+        port: parseInt(document.getElementById("start-port").value) || 8080,
+        extra_args: document.getElementById("start-extra").value,
     };
-    if (!isCustom) {
-        body.port = parseInt(document.getElementById("start-port").value) || 8080;
-        body.extra_args = document.getElementById("start-extra").value;
-    }
 
     try {
         startBtn.disabled = true;
         startBtn.textContent = "Starting...";
         feedback.style.display = "block";
-        feedback.textContent = isCustom ? "自定义服务启动中，vLLM 加载模型可能需要几十秒..." : "服务启动中...";
+        feedback.textContent = "服务启动中...";
         const result = await api("POST", "/api/start", body);
         feedback.innerHTML = `<strong>已提交启动</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
         await loadGpuStatus();
@@ -1274,6 +1340,7 @@ async function loadDownloadStatus() {
         // 下载刚完成时自动刷新模型列表
         if (data.done && !data.running) {
             loadModels();
+            loadVllmRepositories();
         }
     } catch (e) {}
 }
@@ -1349,7 +1416,9 @@ async function loadDownloadLogs() {
 
 document.addEventListener("DOMContentLoaded", () => {
     initGpuCardsPerRow();
-    loadSettings().then(() => loadModelParams()).then(() => loadModels());
+    loadSettings()
+        .then(() => loadModelParams())
+        .then(() => Promise.all([loadModels(), loadVllmRepositories(), loadCustomServices()]));
     loadGpuStatus();
     loadManagedProcesses();
     loadLogs();
