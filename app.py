@@ -27,12 +27,24 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 # ── 路径常量 ──────────────────────────────────────────────
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = APP_DIR / "settings.json"
-MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
-GPU_HISTORY_PATH = APP_DIR / "gpu_history.json"
-CUSTOM_SERVICES_PATH = APP_DIR / "custom_services.json"
-MANAGED_PROCESS_RECORDS_PATH = APP_DIR / "managed_processes.json"
+LEGACY_MODEL_PARAMS_PATH = APP_DIR / "model_params.json"
+LEGACY_LAST_LAUNCH_PATH = APP_DIR / "last_launch.json"
+LEGACY_GPU_HISTORY_PATH = APP_DIR / "gpu_history.json"
+LEGACY_CUSTOM_SERVICES_PATH = APP_DIR / "custom_services.json"
+LEGACY_MANAGED_PROCESS_RECORDS_PATH = APP_DIR / "managed_processes.json"
+MODEL_PARAMS_KEY = "model_params"
+GPU_HISTORY_KEY = "gpu_history"
+CUSTOM_SERVICES_KEY = "custom_services"
+MANAGED_PROCESS_RECORDS_KEY = "managed_processes"
+INTERNAL_SETTINGS_KEYS = {
+    MODEL_PARAMS_KEY,
+    GPU_HISTORY_KEY,
+    CUSTOM_SERVICES_KEY,
+    MANAGED_PROCESS_RECORDS_KEY,
+}
 
 # ── 全局进程状态 ──────────────────────────────────────────
+_settings_lock = threading.RLock()
 _current_process: Optional[subprocess.Popen] = None
 _current_command: Optional[list] = None
 _current_model: Optional[str] = None
@@ -113,41 +125,157 @@ def _get_proxy_client() -> httpx.AsyncClient:
 
 # ── 工具函数 ──────────────────────────────────────────────
 
-def _load_settings() -> dict:
-    """读取 settings.json，文件不存在或解析失败返回空 dict"""
+def _load_settings_raw() -> dict:
+    """读取 settings.json 原始内容，文件不存在或解析失败返回空 dict"""
     try:
         if SETTINGS_PATH.exists():
             data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            # 展开 ~ 路径
-            for key in ("llama_server_path", "model_dir", "log_file"):
-                if key in data and isinstance(data[key], str):
-                    data[key] = str(Path(data[key]).expanduser())
-            return data
+            if isinstance(data, dict):
+                return data
     except (json.JSONDecodeError, OSError):
         pass
     return {}
 
 
-def _save_settings(data: dict) -> dict:
-    """原子写入 settings.json，返回写入后的完整 settings"""
-    existing = _load_settings()
-    existing.update(data)
-    # 原子写入：先写临时文件再 rename
+def _expand_settings_paths(data: dict) -> dict:
+    """展开 settings 中需要后端访问的路径字段"""
+    result = dict(data)
+    for key in ("llama_server_path", "model_dir", "log_file"):
+        if key in result and isinstance(result[key], str):
+            result[key] = str(Path(result[key]).expanduser())
+    return result
+
+
+def _load_settings() -> dict:
+    """读取 settings.json，对路径字段自动展开 ~"""
+    return _expand_settings_paths(_load_settings_raw())
+
+
+def _load_public_settings() -> dict:
+    """读取前端设置页需要展示的配置"""
+    settings = _load_settings()
+    return {
+        key: value for key, value in settings.items()
+        if key not in INTERNAL_SETTINGS_KEYS
+    }
+
+
+def _write_settings_raw(data: dict):
+    """原子写入 settings.json"""
     tmp_fd, tmp_path = tempfile.mkstemp(
         dir=str(APP_DIR), suffix=".json.tmp"
     )
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         os.replace(tmp_path, str(SETTINGS_PATH))
     except Exception:
-        # 清理临时文件
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    return existing
+
+
+def _save_settings(data: dict) -> dict:
+    """保存 settings.json，返回展开路径后的完整 settings"""
+    with _settings_lock:
+        existing = _load_settings_raw()
+        existing.update(data)
+        _write_settings_raw(existing)
+    return _load_public_settings()
+
+
+def _save_settings_state(key: str, value):
+    """保存 settings.json 中的内部状态字段"""
+    with _settings_lock:
+        settings = _load_settings_raw()
+        settings[key] = value
+        _write_settings_raw(settings)
+
+
+def _load_json_file(path: Path):
+    """读取旧版 JSON 状态文件，失败返回 None"""
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _cleanup_legacy_state_file(path: Path):
+    """迁移成功后删除旧版状态文件"""
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _legacy_model_params() -> dict:
+    """读取旧版模型启动参数，并兼容 last_launch.json"""
+    params = _load_json_file(LEGACY_MODEL_PARAMS_PATH)
+    if not isinstance(params, dict):
+        params = {}
+    last = _load_json_file(LEGACY_LAST_LAUNCH_PATH)
+    if isinstance(last, dict):
+        model = last.get("model")
+        if model and model not in params:
+            params[model] = {
+                "port": last.get("port", 8083),
+                "extra_args": last.get("extra_args", ""),
+            }
+    return params
+
+
+def _migrate_legacy_state_files():
+    """将旧版分散 JSON 状态迁移到 settings.json"""
+    with _settings_lock:
+        settings = _load_settings_raw()
+        changed = False
+
+        if MODEL_PARAMS_KEY not in settings:
+            params = _legacy_model_params()
+            if params:
+                settings[MODEL_PARAMS_KEY] = params
+                changed = True
+
+        if CUSTOM_SERVICES_KEY not in settings:
+            services = _load_json_file(LEGACY_CUSTOM_SERVICES_PATH)
+            if isinstance(services, dict):
+                settings[CUSTOM_SERVICES_KEY] = services
+                changed = True
+
+        if MANAGED_PROCESS_RECORDS_KEY not in settings:
+            records = _load_json_file(LEGACY_MANAGED_PROCESS_RECORDS_PATH)
+            if isinstance(records, dict):
+                settings[MANAGED_PROCESS_RECORDS_KEY] = records
+                changed = True
+            elif isinstance(records, list):
+                settings[MANAGED_PROCESS_RECORDS_KEY] = {"processes": records}
+                changed = True
+
+        if GPU_HISTORY_KEY not in settings:
+            history = _load_json_file(LEGACY_GPU_HISTORY_PATH)
+            if isinstance(history, dict) and isinstance(history.get("samples"), list):
+                settings[GPU_HISTORY_KEY] = history
+                changed = True
+
+        if changed:
+            _write_settings_raw(settings)
+
+        for path in (
+            LEGACY_MODEL_PARAMS_PATH,
+            LEGACY_LAST_LAUNCH_PATH,
+            LEGACY_CUSTOM_SERVICES_PATH,
+            LEGACY_MANAGED_PROCESS_RECORDS_PATH,
+            LEGACY_GPU_HISTORY_PATH,
+        ):
+            _cleanup_legacy_state_file(path)
+
+
+_migrate_legacy_state_files()
 
 
 def _llama_server_paths_from_env_value(value: str) -> list[Path]:
@@ -252,103 +380,61 @@ def _validate_extra_args(extra: str) -> Optional[str]:
 
 
 def _load_model_params() -> dict:
-    """读取所有模型的启动参数，格式: {model_path: {port, extra_args}}"""
-    try:
-        if MODEL_PARAMS_PATH.exists():
-            return json.loads(MODEL_PARAMS_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+    """从 settings.json 读取所有模型的启动参数"""
+    _migrate_legacy_state_files()
+    params = _load_settings_raw().get(MODEL_PARAMS_KEY, {})
+    return params if isinstance(params, dict) else {}
 
 
 def _save_model_param(model: str, port: int, extra_args: str):
-    """保存单个模型的启动参数"""
+    """保存单个模型的启动参数到 settings.json"""
     params = _load_model_params()
     params[model] = {"port": port, "extra_args": extra_args}
-    try:
-        MODEL_PARAMS_PATH.write_text(
-            json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    except OSError:
-        pass
+    _save_settings_state(MODEL_PARAMS_KEY, params)
 
 
 def _load_custom_services() -> dict:
-    """读取自定义服务注册表，格式: {service_id: service_config}"""
-    try:
-        if CUSTOM_SERVICES_PATH.exists():
-            data = json.loads(CUSTOM_SERVICES_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+    """从 settings.json 读取自定义服务注册表"""
+    _migrate_legacy_state_files()
+    services = _load_settings_raw().get(CUSTOM_SERVICES_KEY, {})
+    return services if isinstance(services, dict) else {}
 
 
 def _save_custom_services(data: dict):
-    """原子写入自定义服务注册表"""
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(APP_DIR), suffix=".custom_services.tmp"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, str(CUSTOM_SERVICES_PATH))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """保存自定义服务注册表到 settings.json"""
+    _save_settings_state(CUSTOM_SERVICES_KEY, data)
 
 
 def _load_managed_process_records_file() -> dict[int, dict]:
-    """读取受管进程持久化记录，格式: {pid: record}"""
-    try:
-        if MANAGED_PROCESS_RECORDS_PATH.exists():
-            data = json.loads(MANAGED_PROCESS_RECORDS_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                records = data.get("processes", [])
-            elif isinstance(data, list):
-                records = data
-            else:
-                records = []
-            result = {}
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                try:
-                    pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                result[pid] = record
-            return result
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+    """从 settings.json 读取受管进程持久化记录"""
+    _migrate_legacy_state_files()
+    data = _load_settings_raw().get(MANAGED_PROCESS_RECORDS_KEY, {})
+    if isinstance(data, dict):
+        records = data.get("processes", [])
+    elif isinstance(data, list):
+        records = data
+    else:
+        records = []
+    result = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            pid = int(record.get("pid"))
+        except (TypeError, ValueError):
+            continue
+        result[pid] = record
+    return result
 
 
 def _save_managed_process_records_file():
-    """原子写入受管进程持久化记录"""
+    """保存受管进程持久化记录到 settings.json"""
     records = sorted(
         _managed_process_records.values(),
         key=lambda item: item.get("started_at") or 0,
         reverse=True,
     )
-    payload = {"processes": records}
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(APP_DIR), suffix=".managed_processes.tmp"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, str(MANAGED_PROCESS_RECORDS_PATH))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _save_settings_state(MANAGED_PROCESS_RECORDS_KEY, {"processes": records})
 
 
 def _process_create_time(pid: int) -> Optional[float]:
@@ -558,32 +644,17 @@ def _get_gpu_history_hours(settings: Optional[dict] = None) -> float:
 
 
 def _load_gpu_history() -> dict:
-    """读取本地 GPU 历史文件"""
-    try:
-        if GPU_HISTORY_PATH.exists():
-            data = json.loads(GPU_HISTORY_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("samples"), list):
-                return data
-    except (json.JSONDecodeError, OSError):
-        pass
+    """从 settings.json 读取 GPU 历史"""
+    _migrate_legacy_state_files()
+    data = _load_settings_raw().get(GPU_HISTORY_KEY, {})
+    if isinstance(data, dict) and isinstance(data.get("samples"), list):
+        return data
     return {"samples": []}
 
 
 def _save_gpu_history(data: dict):
-    """原子写入 GPU 历史文件"""
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(APP_DIR), suffix=".gpu_history.tmp"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp_path, str(GPU_HISTORY_PATH))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """保存 GPU 历史到 settings.json"""
+    _save_settings_state(GPU_HISTORY_KEY, data)
 
 
 def _append_gpu_history_sample(gpus: list, history_hours: float):
@@ -1289,7 +1360,7 @@ async def get_icon():
 @app.get("/api/settings")
 async def get_settings():
     """读取 settings.json"""
-    return JSONResponse(_load_settings())
+    return JSONResponse(_load_public_settings())
 
 
 @app.post("/api/settings")

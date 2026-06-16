@@ -201,3 +201,11 @@
 - 新增 `/api/detect-llama-cpp` 接口，支持从 `LLAMA_CPP`、`LLAMA_CPP_PATH`、`LLAMA_SERVER_PATH` 等环境变量推断 llama-server 路径
 - 检测成功后前端自动填充 llama-server 路径，并显示来源和可执行状态
 - spec.md 同步更新检测接口、工具函数和设置区说明
+
+## v0.1.9 — 2026-06-16
+
+- 将模型启动参数、自定义服务、受管进程记录和 GPU 历史统一存入 `settings.json`
+- 应用启动时自动迁移并删除旧版 `model_params.json`、`last_launch.json`、`custom_services.json`、`managed_processes.json`、`gpu_history.json`
+- `/api/settings` 继续只返回前端设置页需要的用户配置，避免内部历史状态拖慢页面加载
+- 删除已废弃的独立状态 JSON 文件和对应 `.gitignore` 条目
+- spec.md 同步更新单文件配置与内部状态结构说明
