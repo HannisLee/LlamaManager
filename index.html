@@ -202,6 +202,16 @@
         .start-feedback strong {
             color: #e5eefc;
         }
+        .settings-detect-status {
+            display: none;
+            color: #b7c7df;
+            font-size: 0.88em;
+            margin-top: 8px;
+            word-break: break-all;
+        }
+        .settings-detect-status.error {
+            color: #ffb3b3;
+        }
 
         /* 日志区域 */
         .log-area {
@@ -631,8 +641,10 @@
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+            <button class="btn-secondary" id="detect-llama-cpp-btn" onclick="detectLlamaCpp()">检测 llama.cpp</button>
             <button class="btn-secondary" onclick="loadModels()">Rescan Models</button>
         </div>
+        <div id="detect-llama-cpp-status" class="settings-detect-status"></div>
     </div>
 </div>
 
@@ -745,6 +757,40 @@ async function saveSettings() {
     await api("POST", "/api/settings", data);
     loadGpuStatus();
     alert("设置已保存");
+}
+
+async function detectLlamaCpp() {
+    const btn = document.getElementById("detect-llama-cpp-btn");
+    const status = document.getElementById("detect-llama-cpp-status");
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "检测中...";
+    status.classList.remove("error");
+    status.style.display = "block";
+    status.textContent = "正在检索环境变量和 PATH...";
+    try {
+        const data = await api("GET", "/api/detect-llama-cpp");
+        if (data.found) {
+            document.getElementById("set-server-path").value = data.path;
+            const execText = data.executable ? "可执行" : "已存在但不可执行";
+            status.textContent = `已检测到 ${execText} 的 llama-server：${data.path}（来源：${data.source}）`;
+            if (!data.executable) {
+                status.classList.add("error");
+            }
+        } else if (data.env_matches && data.env_matches.length) {
+            status.classList.add("error");
+            status.textContent = `检测到相关环境变量 ${data.env_matches.join(", ")}，但未找到 llama-server 可执行文件`;
+        } else {
+            status.classList.add("error");
+            status.textContent = "未在环境变量或 PATH 中检测到 llama.cpp / llama-server";
+        }
+    } catch (e) {
+        status.classList.add("error");
+        status.textContent = `检测失败：${e.message}`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+    }
 }
 
 // ── 模型扫描 ──────────────────────────────────────────

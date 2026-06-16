@@ -194,3 +194,10 @@
 - 启动服务区模型下拉改为仅展示 GGUF 模型，自定义服务入口移入 vLLM 服务区
 - 已注册 vLLM / 自定义服务列表新增“启动”按钮，可直接以受管进程运行服务
 - spec.md 同步更新 vLLM 服务区、仓库目录扫描接口和前端函数说明
+
+## v0.1.8 — 2026-06-16
+
+- 设置区新增“检测 llama.cpp”按钮，可自动检索环境变量和 PATH 中的 llama-server
+- 新增 `/api/detect-llama-cpp` 接口，支持从 `LLAMA_CPP`、`LLAMA_CPP_PATH`、`LLAMA_SERVER_PATH` 等环境变量推断 llama-server 路径
+- 检测成功后前端自动填充 llama-server 路径，并显示来源和可执行状态
+- spec.md 同步更新检测接口、工具函数和设置区说明

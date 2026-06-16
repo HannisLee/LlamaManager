@@ -150,6 +150,89 @@ def _save_settings(data: dict) -> dict:
     return existing
 
 
+def _llama_server_paths_from_env_value(value: str) -> list[Path]:
+    """从环境变量值推断可能的 llama-server 路径"""
+    if not value or not isinstance(value, str):
+        return []
+
+    base = Path(value).expanduser()
+    candidates = []
+    if base.is_file():
+        candidates.append(base)
+    elif base.is_dir():
+        candidates.extend([
+            base / "llama-server",
+            base / "bin" / "llama-server",
+            base / "build" / "bin" / "llama-server",
+            base / "build" / "examples" / "server" / "llama-server",
+        ])
+    return candidates
+
+
+def _detect_llama_cpp_environment() -> dict:
+    """检测环境变量和 PATH 中可用的 llama-server"""
+    env_name_candidates = {
+        "LLAMA_CPP",
+        "LLAMA_CPP_PATH",
+        "LLAMA_CPP_DIR",
+        "LLAMACPP_PATH",
+        "LLAMACPP_DIR",
+        "LLAMA_SERVER",
+        "LLAMA_SERVER_PATH",
+    }
+    env_matches = []
+    candidates = []
+    seen_paths = set()
+
+    def add_candidate(path: Path, source: str, env_name: Optional[str] = None):
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            resolved = path.expanduser()
+        key = str(resolved)
+        if key in seen_paths:
+            return
+        seen_paths.add(key)
+        exists = resolved.is_file()
+        executable = exists and os.access(resolved, os.X_OK)
+        if exists:
+            candidates.append({
+                "path": key,
+                "source": source,
+                "env_name": env_name,
+                "executable": executable,
+            })
+
+    for name, value in sorted(os.environ.items()):
+        upper_name = name.upper()
+        is_llama_env = (
+            upper_name in env_name_candidates
+            or ("LLAMA" in upper_name and "CPP" in upper_name)
+        )
+        if not is_llama_env:
+            continue
+        env_matches.append(name)
+        for path in _llama_server_paths_from_env_value(value):
+            add_candidate(path, f"环境变量 {name}", name)
+
+    which_path = shutil.which("llama-server")
+    if which_path:
+        add_candidate(Path(which_path), "PATH")
+
+    best = next((item for item in candidates if item["executable"]), None)
+    if best is None and candidates:
+        best = candidates[0]
+
+    return {
+        "found": best is not None,
+        "path": best["path"] if best else "",
+        "source": best["source"] if best else "",
+        "executable": best["executable"] if best else False,
+        "env_matches": env_matches,
+        "candidates": candidates,
+    }
+
+
 def _validate_extra_args(extra: str) -> Optional[str]:
     """
     校验 extra_args，返回错误信息或 None（表示通过）。
@@ -1217,6 +1300,12 @@ async def save_settings(data: dict):
         return JSONResponse({"ok": True, "data": saved})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/detect-llama-cpp")
+async def detect_llama_cpp():
+    """检测环境变量或 PATH 中是否存在 llama.cpp 的 llama-server"""
+    return JSONResponse(_detect_llama_cpp_environment())
 
 
 @app.get("/api/models")
