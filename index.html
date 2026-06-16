@@ -76,6 +76,8 @@
         }
         .badge-running { background: #2e7d32; color: #fff; }
         .badge-stopped { background: #555; color: #ccc; }
+        .badge-danger { background: #c62828; color: #fff; }
+        .badge-warning { background: #e65100; color: #fff; }
 
         /* 状态信息行 */
         .status-info {
@@ -188,6 +190,67 @@
         .custom-service-empty {
             color: #7d8ba3;
             font-size: 0.88em;
+        }
+        .download-task-list {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .download-task-row {
+            display: grid;
+            grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1fr) 120px auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #263247;
+            font-size: 0.88em;
+        }
+        .download-task-row:last-child {
+            border-bottom: none;
+        }
+        .download-task-title {
+            min-width: 0;
+        }
+        .download-task-title strong,
+        .download-task-title span {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .download-task-title span {
+            color: #7d8ba3;
+            font-size: 0.9em;
+        }
+        .download-progress {
+            min-width: 0;
+        }
+        .download-progress-track {
+            background: #0a0a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            height: 16px;
+            overflow: hidden;
+        }
+        .download-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #1565c0, #2e7d32);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .download-progress-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            color: #888;
+            font-size: 0.82em;
+            margin-top: 4px;
+        }
+        .download-task-actions {
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
         }
         .start-feedback {
             display: none;
@@ -439,7 +502,14 @@
                 grid-template-columns: 1fr;
                 align-items: start;
             }
+            .download-task-row {
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
             .custom-service-actions {
+                justify-content: flex-start;
+            }
+            .download-task-actions {
                 justify-content: flex-start;
             }
             .gpu-wave-grid,
@@ -598,19 +668,7 @@
         </div>
         <div style="margin-top:10px; display:flex; align-items:center; gap:12px;">
             <button class="btn-success" id="btn-download" onclick="startDownload()">Download</button>
-            <button class="btn-danger" id="btn-dl-cancel" onclick="cancelDownload()" disabled>Cancel</button>
-            <span id="dl-status-badge" class="badge badge-stopped">Idle</span>
             <span id="dl-status-text" style="color:#888; font-size:0.85em;"></span>
-        </div>
-        <!-- 进度条 -->
-        <div id="dl-progress-wrap" style="display:none; margin-top:10px;">
-            <div style="background:#0a0a1a; border-radius:4px; overflow:hidden; height:20px; border:1px solid #333;">
-                <div id="dl-progress-bar" style="height:100%; background:linear-gradient(90deg,#1565c0,#2e7d32); width:0%; transition:width 0.3s;"></div>
-            </div>
-            <div style="display:flex; justify-content:space-between; font-size:0.8em; color:#888; margin-top:4px;">
-                <span id="dl-progress-text">0%</span>
-                <span id="dl-progress-size">0 MB / 0 MB</span>
-            </div>
         </div>
         <!-- 强制重新下载 -->
         <div class="checkbox-row" style="margin-top:8px;">
@@ -621,8 +679,14 @@
 
     <!-- 第六块：下载日志 -->
     <div class="card">
-        <h2>下载日志</h2>
-        <div class="btn-group" style="margin-bottom:10px">
+        <h2>下载任务</h2>
+        <div id="download-task-list" class="download-task-list">
+            <div class="custom-service-empty">暂无下载任务</div>
+        </div>
+        <div class="btn-group" style="margin-bottom:10px; align-items:center;">
+            <select id="download-log-select" onchange="loadDownloadLogs()" style="padding:6px 10px; background:#0f1629; border:1px solid #333; border-radius:4px; color:#e0e0e0; min-width:260px;">
+                <option value="">最新下载任务</option>
+            </select>
             <button class="btn-secondary" onclick="loadDownloadLogs()">Refresh Logs</button>
         </div>
         <textarea id="dl-log-area" class="log-area" readonly placeholder="暂无下载日志"></textarea>
@@ -655,6 +719,8 @@ let currentGpuIndexes = [];
 let customServices = [];
 let modelRepositories = [];
 let managedProcessRecords = [];
+let downloadTasks = [];
+let completedDownloadTaskIds = new Set();
 let editingCustomServiceId = "";
 
 // ── 工具函数 ──────────────────────────────────────────
@@ -1362,29 +1428,47 @@ async function startDownload() {
     const repo = document.getElementById("dl-repo").value.trim();
     const filename = document.getElementById("dl-filename").value.trim();
     const force_download = document.getElementById("dl-force").checked;
+    const btn = document.getElementById("btn-download");
+    const statusText = document.getElementById("dl-status-text");
     if (!repo) {
         showError("请输入仓库名");
         return;
     }
+    btn.disabled = true;
+    statusText.textContent = "正在创建下载任务...";
     try {
-        await api("POST", "/api/download", { repo, filename, force_download });
-        updateDownloadUI({ running: true, done: false, repo, filename, progress: null });
-    } catch (e) {}
+        const result = await api("POST", "/api/download", { repo, filename, force_download });
+        statusText.textContent = `已新增下载任务：${downloadLabel(result.task || { repo, filename })}`;
+        await loadDownloadStatus();
+        const logSelect = document.getElementById("download-log-select");
+        if (result.id) {
+            logSelect.value = result.id;
+        }
+        await loadDownloadLogs();
+    } catch (e) {
+        statusText.textContent = "";
+    } finally {
+        btn.disabled = false;
+    }
 }
 
-async function cancelDownload() {
+async function cancelDownload(taskId) {
     try {
-        await api("POST", "/api/download/cancel");
-        updateDownloadUI({ running: false, done: false });
+        await api("POST", "/api/download/cancel", { task_id: taskId });
+        await loadDownloadStatus();
+        await loadDownloadLogs();
     } catch (e) {}
 }
 
 async function loadDownloadStatus() {
     try {
         const data = await api("GET", "/api/download/status");
+        const previousDone = new Set(completedDownloadTaskIds);
         updateDownloadUI(data);
-        // 下载刚完成时自动刷新模型列表
-        if (data.done && !data.running) {
+        const hasNewCompleted = downloadTasks.some(task =>
+            task.done && !task.running && !task.error && !previousDone.has(task.id)
+        );
+        if (hasNewCompleted) {
             loadModels();
             loadVllmRepositories();
         }
@@ -1396,64 +1480,110 @@ function downloadLabel(data) {
     return data.target_dir ? `${lbl} → ${data.target_dir}` : lbl;
 }
 
-function updateDownloadUI(data) {
-    const badge = document.getElementById("dl-status-badge");
-    const text = document.getElementById("dl-status-text");
-    const btnDl = document.getElementById("btn-download");
-    const btnCancel = document.getElementById("btn-dl-cancel");
-    const progressWrap = document.getElementById("dl-progress-wrap");
-    const progressBar = document.getElementById("dl-progress-bar");
-    const progressText = document.getElementById("dl-progress-text");
-    const progressSize = document.getElementById("dl-progress-size");
+function downloadState(task) {
+    if (task.running && task.cancel_requested) return { text: "Cancelling", className: "badge badge-warning" };
+    if (task.running) return { text: "Downloading", className: "badge badge-running" };
+    if (task.done && task.error) return { text: "Error", className: "badge badge-danger" };
+    if (task.done) return { text: "Done", className: "badge badge-running" };
+    return { text: "Idle", className: "badge badge-stopped" };
+}
 
-    if (data.running) {
-        badge.textContent = "Downloading";
-        badge.className = "badge badge-running";
-        text.textContent = downloadLabel(data);
-        btnDl.disabled = true;
-        btnCancel.disabled = false;
-        // 更新进度条
-        if (data.progress && data.progress.total > 0) {
-            progressWrap.style.display = "block";
-            progressBar.style.width = data.progress.percentage + "%";
-            progressText.textContent = data.progress.percentage + "%";
-            progressSize.textContent = `${data.progress.downloaded_mb} MB / ${data.progress.total_mb} MB`;
-        } else {
-            progressWrap.style.display = "block";
-            progressBar.style.width = "0%";
-            progressText.textContent = "准备中...";
-            progressSize.textContent = "";
-        }
-    } else if (data.done) {
-        badge.textContent = "Done";
-        badge.className = "badge badge-running";
-        text.textContent = downloadLabel(data);
-        btnDl.disabled = false;
-        btnCancel.disabled = true;
-        // 完成时显示100%
-        if (data.progress && data.progress.total > 0) {
-            progressWrap.style.display = "block";
-            progressBar.style.width = "100%";
-            progressText.textContent = "100%";
-            progressSize.textContent = `${data.progress.total_mb} MB`;
-        } else {
-            progressWrap.style.display = "none";
-        }
-    } else {
-        badge.textContent = "Idle";
-        badge.className = "badge badge-stopped";
-        text.textContent = "";
-        btnDl.disabled = false;
-        btnCancel.disabled = true;
-        progressWrap.style.display = "none";
+function progressMeta(task) {
+    if (task.progress && task.progress.total > 0) {
+        return {
+            pct: task.done && !task.error ? 100 : task.progress.percentage,
+            text: `${task.progress.percentage}%`,
+            size: `${task.progress.downloaded_mb} MB / ${task.progress.total_mb} MB`,
+        };
     }
+    if (task.running) {
+        return { pct: 0, text: "准备中...", size: "" };
+    }
+    return { pct: 0, text: "-", size: "" };
+}
+
+function updateDownloadUI(data) {
+    downloadTasks = Array.isArray(data.downloads) ? data.downloads : [];
+    downloadTasks.forEach(task => {
+        if (task.done && !task.running) {
+            completedDownloadTaskIds.add(task.id);
+        }
+    });
+    updateDownloadTaskList();
+    updateDownloadLogSelect();
+}
+
+function updateDownloadTaskList() {
+    const wrap = document.getElementById("download-task-list");
+    if (!downloadTasks.length) {
+        wrap.innerHTML = `<div class="custom-service-empty">暂无下载任务</div>`;
+        return;
+    }
+    wrap.innerHTML = downloadTasks.map(task => {
+        const state = downloadState(task);
+        const progress = progressMeta(task);
+        const errorText = task.error ? ` · ${task.error}` : "";
+        return `
+            <div class="download-task-row">
+                <div class="download-task-title">
+                    <strong title="${escapeHtml(downloadLabel(task))}">${escapeHtml(task.label || downloadLabel(task))}</strong>
+                    <span title="${escapeHtml(task.target_dir || "")}">${escapeHtml(task.target_dir || "-")}${escapeHtml(errorText)}</span>
+                </div>
+                <div class="download-progress">
+                    <div class="download-progress-track">
+                        <div class="download-progress-fill" style="width:${progress.pct}%"></div>
+                    </div>
+                    <div class="download-progress-meta">
+                        <span>${escapeHtml(progress.text)}</span>
+                        <span>${escapeHtml(progress.size)}</span>
+                    </div>
+                </div>
+                <span class="${state.className}">${state.text}</span>
+                <div class="download-task-actions">
+                    <button class="btn-secondary" onclick="selectDownloadLog('${escapeHtml(task.id)}')">Logs</button>
+                    <button class="btn-danger" onclick="cancelDownload('${escapeHtml(task.id)}')" ${task.running && !task.cancel_requested ? "" : "disabled"}>Cancel</button>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function updateDownloadLogSelect() {
+    const select = document.getElementById("download-log-select");
+    const current = select.value;
+    select.innerHTML = `<option value="">最新下载任务</option>`;
+    downloadTasks.forEach(task => {
+        const opt = document.createElement("option");
+        opt.value = task.id;
+        const state = downloadState(task).text;
+        opt.textContent = `${state} · ${task.label || downloadLabel(task)}`;
+        select.appendChild(opt);
+    });
+    if (Array.from(select.options).some(opt => opt.value === current)) {
+        select.value = current;
+    }
+}
+
+async function selectDownloadLog(taskId) {
+    document.getElementById("download-log-select").value = taskId;
+    await loadDownloadLogs();
 }
 
 // ── 下载日志 ──────────────────────────────────────────
 
 async function loadDownloadLogs() {
     try {
-        const data = await api("GET", "/api/download/logs");
+        const taskId = document.getElementById("download-log-select").value;
+        const path = taskId ? `/api/download/logs?task_id=${encodeURIComponent(taskId)}` : "/api/download/logs";
+        const data = await api("GET", path);
+        if (Array.isArray(data.downloads)) {
+            downloadTasks = data.downloads;
+            updateDownloadTaskList();
+            updateDownloadLogSelect();
+            if (taskId) {
+                document.getElementById("download-log-select").value = taskId;
+            }
+        }
         document.getElementById("dl-log-area").value = data.logs || "";
     } catch (e) {}
 }

@@ -60,40 +60,9 @@ _gpu_history_lock = threading.Lock()
 _last_gpu_sample_ts: float = 0
 GPU_SAMPLE_INTERVAL_SECONDS = 5
 
-# ── 下载状态 ────────────────────────────────────────────
-_download_running: bool = False
-_download_done: bool = False
-_download_repo: Optional[str] = None
-_download_filename: Optional[str] = None
-_download_target_dir: Optional[str] = None
-_download_error: Optional[str] = None
+# ── 下载任务状态 ───────────────────────────────────────
+_download_tasks: dict[str, dict] = {}
 _download_lock = threading.Lock()
-
-# ── 下载进度追踪 ──────────────────────────────────────
-_download_progress_n: int = 0
-_download_progress_total: int = 0
-
-
-class _DownloadTqdm(_tqdm_module.tqdm):
-    """自定义 tqdm，将字节下载进度写入全局变量供 API 查询。
-
-    snapshot_download 内部会创建两个进度条实例：字节进度条（unit='B'）和
-    文件数进度条（thread_map，无 unit='B'）。只追踪前者，避免文件数进度污染。
-    """
-
-    def __init__(self, *args, **kwargs):
-        global _download_progress_n
-        super().__init__(*args, **kwargs)
-        self._track = kwargs.get("unit") == "B"
-        if self._track:
-            _download_progress_n = 0
-
-    def update(self, n=1):
-        global _download_progress_n
-        result = super().update(n)
-        if self._track:
-            _download_progress_n = self.n
-        return result
 
 app = FastAPI(title="LlamaManager")
 
@@ -1758,13 +1727,85 @@ async def get_logs(pid: Optional[int] = None):
 
 # ── 下载 API ────────────────────────────────────────────
 
+def _download_label(task: dict) -> str:
+    """生成下载任务显示名"""
+    filename = task.get("filename")
+    return f"{task.get('repo')}/{filename}" if filename else f"{task.get('repo')} 全量"
+
+
+def _download_task_snapshot(task: dict) -> dict:
+    """生成下载任务 API 快照"""
+    progress = None
+    total = int(task.get("progress_total") or 0)
+    downloaded = int(task.get("progress_n") or 0)
+    if total > 0:
+        pct = min(max(downloaded / total * 100, 0), 100)
+        progress = {
+            "downloaded": downloaded,
+            "total": total,
+            "percentage": round(pct, 1),
+            "downloaded_mb": round(downloaded / 1024 / 1024, 1),
+            "total_mb": round(total / 1024 / 1024, 1),
+        }
+    return {
+        "id": task["id"],
+        "running": bool(task.get("running")),
+        "done": bool(task.get("done")),
+        "cancel_requested": bool(task.get("cancel_requested")),
+        "repo": task.get("repo"),
+        "filename": task.get("filename"),
+        "target_dir": task.get("target_dir"),
+        "error": task.get("error"),
+        "progress": progress,
+        "created_at": task.get("created_at"),
+        "updated_at": task.get("updated_at"),
+        "label": _download_label(task),
+        "log_file": task.get("log_file"),
+    }
+
+
+def _download_task_snapshots() -> list[dict]:
+    """按创建时间倒序返回下载任务列表"""
+    with _download_lock:
+        tasks = sorted(
+            _download_tasks.values(),
+            key=lambda item: item.get("created_at") or 0,
+            reverse=True,
+        )
+        return [_download_task_snapshot(task) for task in tasks]
+
+
+def _make_download_tqdm(task_id: str):
+    """创建绑定到指定下载任务的 tqdm 类"""
+    class _TaskDownloadTqdm(_tqdm_module.tqdm):
+        """将字节下载进度写入指定任务状态。"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._track = kwargs.get("unit") == "B"
+            if self._track:
+                with _download_lock:
+                    task = _download_tasks.get(task_id)
+                    if task:
+                        task["progress_n"] = 0
+                        task["updated_at"] = time.time()
+
+        def update(self, n=1):
+            result = super().update(n)
+            if self._track:
+                with _download_lock:
+                    task = _download_tasks.get(task_id)
+                    if task:
+                        task["progress_n"] = self.n
+                        task["updated_at"] = time.time()
+            return result
+
+    return _TaskDownloadTqdm
+
+
 @app.post("/api/download")
 async def download_model(body: dict = None):
     """从 Hugging Face 下载模型"""
-    global _download_running, _download_done, _download_repo, _download_filename
-    global _download_target_dir, _download_error
-    global _download_progress_n, _download_progress_total
-
     if body is None:
         body = {}
 
@@ -1782,170 +1823,218 @@ async def download_model(body: dict = None):
     if filename and not re.match(r'^[a-zA-Z0-9_.\-]+\.gguf$', filename):
         raise HTTPException(status_code=400, detail="文件名格式错误，必须以 .gguf 结尾（留空则全量下载）")
 
-    with _download_lock:
-        # 检查是否正在下载
-        if _download_running:
-            raise HTTPException(status_code=409, detail="已有下载任务在运行")
+    settings = _load_settings()
+    model_dir = settings.get("model_dir", "")
+    if not model_dir:
+        raise HTTPException(status_code=400, detail="未设置模型目录")
 
-        settings = _load_settings()
-        model_dir = settings.get("model_dir", "")
-        if not model_dir:
-            raise HTTPException(status_code=400, detail="未设置模型目录")
+    # 确保 model_dir 存在
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
 
-        # 确保 model_dir 存在
-        Path(model_dir).mkdir(parents=True, exist_ok=True)
+    # 全量下载目标目录为 model_dir/owner--repo，单文件为 model_dir
+    if filename:
+        target_dir = model_dir
+    else:
+        target_dir = os.path.join(model_dir, repo.replace("/", "--"))
+    Path(target_dir).mkdir(parents=True, exist_ok=True)
 
-        # 准备下载日志
-        download_log = APP_DIR / "logs" / "download.log"
-        download_log.parent.mkdir(parents=True, exist_ok=True)
+    task_id = f"dl_{uuid.uuid4().hex[:12]}"
+    download_log = APP_DIR / "logs" / "downloads" / f"{task_id}.log"
+    download_log.parent.mkdir(parents=True, exist_ok=True)
+    progress_total = 0
 
-        # 全量下载目标目录为 model_dir/owner--repo，单文件为 model_dir
+    # 预获取远程文件总大小
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
         if filename:
-            target_dir = model_dir
+            # 单文件：找匹配的 sibling
+            model_info = api.model_info(repo_id=repo, files_metadata=True)
+            for sibling in (model_info.siblings or []):
+                if sibling.rfilename == filename:
+                    progress_total = sibling.size or 0
+                    break
         else:
-            target_dir = os.path.join(model_dir, repo.replace("/", "--"))
-        Path(target_dir).mkdir(parents=True, exist_ok=True)
+            # 全量：所有文件大小求和
+            info = api.repo_info(repo_id=repo, files_metadata=True)
+            progress_total = sum(
+                s.size for s in (info.siblings or []) if s.size
+            )
+    except Exception:
+        pass
 
-        _download_repo = repo
-        _download_filename = filename or None
-        _download_target_dir = target_dir
-        _download_done = False
-        _download_running = True
-        _download_error = None
-        _download_progress_n = 0
-        _download_progress_total = 0
+    now = time.time()
+    task = {
+        "id": task_id,
+        "repo": repo,
+        "filename": filename or None,
+        "target_dir": target_dir,
+        "force_download": force_download,
+        "log_file": str(download_log),
+        "running": True,
+        "done": False,
+        "cancel_requested": False,
+        "error": None,
+        "progress_n": 0,
+        "progress_total": progress_total,
+        "created_at": now,
+        "updated_at": now,
+    }
+    with _download_lock:
+        _download_tasks[task_id] = task
 
-        # 预获取远程文件总大小
+    def _do_download():
+        """后台线程执行下载"""
+        tag = f"[{repo}/{filename}]" if filename else f"[{repo} 全量]"
         try:
-            from huggingface_hub import HfApi
-            api = HfApi()
+            size_info = f" ({progress_total / 1024 / 1024:.1f} MB)" if progress_total else ""
+            log_msg = f"{tag} 开始下载到 {target_dir}{size_info}\n"
+            download_log.write_text(log_msg, encoding="utf-8")
+            tqdm_class = _make_download_tqdm(task_id)
+
             if filename:
-                # 单文件：找匹配的 sibling
-                model_info = api.model_info(repo_id=repo, files_metadata=True)
-                for sibling in (model_info.siblings or []):
-                    if sibling.rfilename == filename:
-                        _download_progress_total = sibling.size or 0
-                        break
-            else:
-                # 全量：所有文件大小求和
-                info = api.repo_info(repo_id=repo, files_metadata=True)
-                _download_progress_total = sum(
-                    s.size for s in (info.siblings or []) if s.size
+                from huggingface_hub import hf_hub_download
+                path = hf_hub_download(
+                    repo_id=repo,
+                    filename=filename,
+                    local_dir=target_dir,
+                    force_download=force_download,
+                    tqdm_class=tqdm_class,
                 )
-        except Exception:
-            pass
+            else:
+                from huggingface_hub import snapshot_download
+                path = snapshot_download(
+                    repo_id=repo,
+                    local_dir=target_dir,
+                    force_download=force_download,
+                    tqdm_class=tqdm_class,
+                )
 
-        def _do_download():
-            """后台线程执行下载"""
-            global _download_done, _download_running, _download_error
-            try:
-                tag = f"[{repo}/{filename}]" if filename else f"[{repo} 全量]"
-                size_info = f" ({_download_progress_total / 1024 / 1024:.1f} MB)" if _download_progress_total else ""
-                log_msg = f"{tag} 开始下载到 {target_dir}{size_info}\n"
-                download_log.write_text(log_msg, encoding="utf-8")
-
-                if filename:
-                    from huggingface_hub import hf_hub_download
-                    path = hf_hub_download(
-                        repo_id=repo,
-                        filename=filename,
-                        local_dir=target_dir,
-                        force_download=force_download,
-                        tqdm_class=_DownloadTqdm,
-                    )
+            with _download_lock:
+                current = _download_tasks.get(task_id, {})
+                cancel_requested = bool(current.get("cancel_requested"))
+                current["done"] = True
+                current["running"] = False
+                current["updated_at"] = time.time()
+                if cancel_requested:
+                    current["error"] = "已请求取消，下载线程已结束"
+            with open(download_log, "a", encoding="utf-8") as f:
+                if cancel_requested:
+                    f.write(f"{tag} 已收到取消请求，下载线程结束: {path}\n")
                 else:
-                    from huggingface_hub import snapshot_download
-                    path = snapshot_download(
-                        repo_id=repo,
-                        local_dir=target_dir,
-                        force_download=force_download,
-                        tqdm_class=_DownloadTqdm,
-                    )
-
-                with open(download_log, "a", encoding="utf-8") as f:
                     f.write(f"{tag} 下载完成: {path}\n")
-                _download_done = True
-            except Exception as e:
-                _download_error = str(e)
-                tag = f"[{repo}/{filename}]" if filename else f"[{repo} 全量]"
-                with open(download_log, "a", encoding="utf-8") as f:
-                    f.write(f"{tag} 下载失败: {e}\n")
-                _download_done = True
-            finally:
-                _download_running = False
+        except Exception as e:
+            with _download_lock:
+                current = _download_tasks.get(task_id, {})
+                current["error"] = str(e)
+                current["done"] = True
+                current["running"] = False
+                current["updated_at"] = time.time()
+            with open(download_log, "a", encoding="utf-8") as f:
+                f.write(f"{tag} 下载失败: {e}\n")
 
-        threading.Thread(target=_do_download, daemon=True).start()
+    threading.Thread(target=_do_download, daemon=True).start()
 
-        return JSONResponse({
-            "ok": True,
-            "repo": repo,
-            "filename": filename or None,
-            "target_dir": target_dir,
-            "message": "下载已启动",
-        })
+    return JSONResponse({
+        "ok": True,
+        "task": _download_task_snapshot(task),
+        "id": task_id,
+        "repo": repo,
+        "filename": filename or None,
+        "target_dir": target_dir,
+        "message": "下载已启动",
+    })
 
 
 @app.get("/api/download/status")
 async def download_status():
-    """查询下载状态"""
-    with _download_lock:
-        # 构建进度信息
-        progress = None
-        if _download_progress_total > 0:
-            pct = _download_progress_n / _download_progress_total * 100
-            progress = {
-                "downloaded": _download_progress_n,
-                "total": _download_progress_total,
-                "percentage": round(pct, 1),
-                "downloaded_mb": round(_download_progress_n / 1024 / 1024, 1),
-                "total_mb": round(_download_progress_total / 1024 / 1024, 1),
-            }
-        return JSONResponse({
-            "running": _download_running,
-            "done": _download_done,
-            "repo": _download_repo,
-            "filename": _download_filename,
-            "target_dir": _download_target_dir,
-            "error": _download_error,
-            "progress": progress,
-        })
+    """查询下载任务状态"""
+    downloads = _download_task_snapshots()
+    latest = downloads[0] if downloads else {}
+    return JSONResponse({
+        "running": any(item.get("running") for item in downloads),
+        "done": latest.get("done", False),
+        "repo": latest.get("repo"),
+        "filename": latest.get("filename"),
+        "target_dir": latest.get("target_dir"),
+        "error": latest.get("error"),
+        "progress": latest.get("progress"),
+        "downloads": downloads,
+    })
 
 
 @app.post("/api/download/cancel")
-async def cancel_download():
-    """取消当前下载（标记取消，线程会自行结束）"""
-    global _download_running, _download_done
+async def cancel_download(body: dict = None):
+    """标记取消指定下载任务"""
+    if body is None:
+        body = {}
+    task_id = body.get("task_id") or body.get("id")
 
     with _download_lock:
-        if not _download_running:
+        task = None
+        if task_id:
+            task = _download_tasks.get(str(task_id))
+        else:
+            running = [
+                item for item in _download_tasks.values()
+                if item.get("running")
+            ]
+            if running:
+                task = max(running, key=lambda item: item.get("created_at") or 0)
+
+        if task is None:
             return JSONResponse({"ok": True, "status": "no_download_running"})
 
-        _download_running = False
-        _download_done = True
+        task["cancel_requested"] = True
+        task["updated_at"] = time.time()
+        log_file = task.get("log_file")
+        snapshot = _download_task_snapshot(task)
 
-        download_log = APP_DIR / "logs" / "download.log"
+    if log_file:
         try:
-            with open(download_log, "a", encoding="utf-8") as f:
-                f.write(f"[{_download_repo}/{_download_filename}] 下载已取消\n")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{_download_label(task)}] 已请求取消\n")
         except OSError:
             pass
 
-        return JSONResponse({"ok": True, "status": "cancelled"})
+    return JSONResponse({"ok": True, "status": "cancel_requested", "task": snapshot})
 
 
 @app.get("/api/download/logs")
-async def get_download_logs():
-    """读取下载日志尾部"""
-    download_log = APP_DIR / "logs" / "download.log"
+async def get_download_logs(task_id: Optional[str] = None):
+    """读取指定下载任务日志尾部"""
+    downloads = _download_task_snapshots()
+    task = None
+    with _download_lock:
+        if task_id:
+            task = _download_tasks.get(task_id)
+        elif downloads:
+            task = _download_tasks.get(downloads[0]["id"])
 
+    if task is None:
+        return JSONResponse({"logs": "", "downloads": downloads})
+
+    download_log = Path(task.get("log_file", ""))
+    if not download_log.is_absolute():
+        download_log = APP_DIR / download_log
     if not download_log.exists():
-        return JSONResponse({"logs": ""})
+        return JSONResponse({"logs": "", "task_id": task["id"], "downloads": downloads})
 
     try:
         lines = download_log.read_text(errors="replace").splitlines()
-        return JSONResponse({"logs": "\n".join(lines[-100:])})
+        return JSONResponse({
+            "logs": "\n".join(lines[-100:]),
+            "task_id": task["id"],
+            "path": str(download_log),
+            "downloads": downloads,
+        })
     except Exception as e:
-        return JSONResponse({"logs": f"读取日志失败: {str(e)}"})
+        return JSONResponse({
+            "logs": f"读取日志失败: {str(e)}",
+            "task_id": task["id"],
+            "path": str(download_log),
+            "downloads": downloads,
+        })
 
 
 async def _proxy_request_to_base(base_url: str, path: str, request: Request):
