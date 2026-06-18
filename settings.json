@@ -30,17 +30,6 @@
       "command": null,
       "created_at": 1781763892.9574897
     },
-    "svc_0e19cb06fecd": {
-      "id": "svc_0e19cb06fecd",
-      "name": "Qwen3.6-27B-Q4_K_M.gguf",
-      "service_type": "llama",
-      "model": "/home/lihan/models/Qwen3.6-27B-Q4_K_M.gguf",
-      "port": 8085,
-      "extra_args": "--mmproj /home/lihan/models/mmproj-BF16.gguf -c 131072 --cache-type-k q4_0 --cache-type-v q4_0 --chat-template-kwargs '{\"enable_thinking\":false}'",
-      "gpu_indexes": [],
-      "command": null,
-      "created_at": 1781763892.9575012
-    },
     "svc_b51a79270e2f": {
       "id": "svc_b51a79270e2f",
       "name": "HY-MT2-7B-Q8_0.gguf",
@@ -54,7 +43,7 @@
     },
     "svc_fbf9c0d2d68b": {
       "id": "svc_fbf9c0d2d68b",
-      "name": "Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf",
+      "name": "Qwen3.6-27B-Uncensored",
       "service_type": "llama",
       "model": "/home/lihan/models/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf",
       "port": 8085,
@@ -106,7 +95,7 @@
         "log_file": "/home/lihan/run/LlamaManager/logs/services/llama-Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf-8085-20260617-145340.log",
         "started_at": 1781675620.2990143,
         "process_create_time": 1781675620.21,
-        "running": true
+        "running": false
       },
       {
         "pid": 513583,
@@ -577,446 +566,6 @@
   },
   "gpu_history": {
     "samples": [
-      {
-        "timestamp": 1781754772.0667257,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781754832.1535468,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781754892.105987,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781754952.1502783,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755012.0955546,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755072.1105635,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755132.1854687,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755192.088327,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755252.1196115,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755312.1046963,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755372.2003882,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755432.1337292,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755492.1376014,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755552.1564066,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755612.112933,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755672.0856726,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755732.0872884,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755792.3463197,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755852.1186378,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755912.1650417,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781755972.1122787,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756032.1318986,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756092.117779,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756152.1399264,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756212.1379712,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756272.1097088,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756332.1846323,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756392.1279967,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756452.1984174,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756512.1342874,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756572.1150587,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756632.145612,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756692.1935625,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756752.574122,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756812.1526113,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756872.138722,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756932.255945,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781756992.2146182,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757052.152836,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757112.135881,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757172.1510527,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757232.2245848,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757292.1492567,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
-      {
-        "timestamp": 1781757352.1355896,
-        "gpus": [
-          {
-            "index": 0,
-            "name": "NVIDIA GeForce RTX 3090 Ti",
-            "gpu_util": 0
-          }
-        ]
-      },
       {
         "timestamp": 1781757412.2293062,
         "gpus": [
@@ -3579,6 +3128,1016 @@
       },
       {
         "timestamp": 1781765512.2554317,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765538.9476607,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765572.2480922,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765599.1037176,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765632.236278,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765658.9644191,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765692.2655134,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765719.017522,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765752.2813315,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765778.9749806,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765812.2602487,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765839.0080266,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765872.2600276,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765898.9863038,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765932.2762032,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765959.0165749,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781765992.2722955,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766018.9968023,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766052.2664855,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766079.1333044,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766112.4006207,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766139.1692648,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766172.2553282,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766199.0541925,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766232.2795906,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766259.0114245,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766292.2711031,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766319.0659566,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766352.2823575,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766379.0766203,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766412.2613144,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766439.0469797,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766472.2896483,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766499.0226264,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766532.310163,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766559.2062674,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766832.3000064,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766859.0789595,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766892.2647393,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766919.0346017,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766952.4478643,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781766979.1761332,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767012.2755432,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767039.0483243,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767072.2945187,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767099.0903947,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767132.286245,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767159.0615976,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767186.0734065,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767191.7749112,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767201.7757142,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767207.2694612,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767216.7691069,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767226.768221,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767231.7766318,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767241.7749994,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767246.7795699,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767251.7877479,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767261.7818284,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767266.781842,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767271.7888923,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767281.7918646,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767291.7727582,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767296.7909377,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767306.7891898,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767312.0368707,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767317.0450056,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767322.0501325,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767332.0478718,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767337.058077,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767342.0592382,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767352.0511284,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767357.052276,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767367.0542989,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767372.290498,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767399.1260014,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767432.4588816,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767459.1022146,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767492.3197026,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767519.1611161,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767552.3481858,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767579.122133,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767612.3151455,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767639.1651149,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767672.3444746,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767699.133543,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767732.460033,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767759.253045,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767792.3506632,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767819.1591344,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767852.351785,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767879.1704984,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767912.356479,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767939.1661966,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767972.3497145,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781767999.2264242,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768032.359272,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768059.177462,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768092.644723,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768119.2230232,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768152.3435216,
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 3090 Ti",
+            "gpu_util": 0
+          }
+        ]
+      },
+      {
+        "timestamp": 1781768179.1877317,
         "gpus": [
           {
             "index": 0,

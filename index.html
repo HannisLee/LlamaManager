@@ -583,6 +583,20 @@
     <div class="card">
         <h2>服务管理</h2>
 
+        <!-- 已注册服务（启动/停止/重启/打开/编辑/删除） -->
+        <div class="custom-service-list">
+            <h3>已注册服务</h3>
+            <div id="registered-service-list" class="custom-service-empty">暂无已注册服务</div>
+        </div>
+
+        <!-- 启动行为全局开关 -->
+        <div class="custom-service-list">
+            <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:center;">
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-auto-kill" checked> 端口被占用时自动 kill</label>
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-incremental" checked> 增量启动（不停止已有实例）</label>
+            </div>
+        </div>
+
         <!-- 注册表单：llama.cpp / vLLM 类型切换 -->
         <div class="form-grid">
             <label>服务类型</label>
@@ -629,26 +643,6 @@
                 <button class="btn-secondary" onclick="loadModels()">扫描模型</button>
                 <button class="btn-secondary" onclick="loadVllmRepositories()">扫描仓库</button>
             </div>
-        </div>
-
-        <!-- 已注册服务（注册列表：增删改） -->
-        <div class="custom-service-list">
-            <h3>已注册服务</h3>
-            <div id="registered-service-list" class="custom-service-empty">暂无已注册服务</div>
-        </div>
-
-        <!-- 启动行为全局开关 -->
-        <div class="custom-service-list">
-            <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:center;">
-                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-auto-kill" checked> 端口被占用时自动 kill</label>
-                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-incremental" checked> 增量启动（不停止已有实例）</label>
-            </div>
-        </div>
-
-        <!-- 启动 / 运行中（启动列表：启停） -->
-        <div class="custom-service-list">
-            <h3>启动 / 运行中</h3>
-            <div id="launch-service-list" class="custom-service-empty">暂无已注册服务</div>
         </div>
         <div id="start-feedback" class="start-feedback"></div>
     </div>
@@ -957,7 +951,6 @@ async function loadCustomServices() {
     const serviceData = await api("GET", "/api/custom-services");
     customServices = serviceData.services || [];
     renderRegisteredServices();
-    renderLaunchServices();
 }
 
 function serviceTypeBadge(type) {
@@ -965,35 +958,9 @@ function serviceTypeBadge(type) {
     return type || "vllm";
 }
 
-// 已注册服务列表（注册列表：仅编辑/删除）
+// 已注册服务列表（启动/停止/重启/打开 + 编辑/删除，按运行状态切换启动按钮）
 function renderRegisteredServices() {
     const wrap = document.getElementById("registered-service-list");
-    if (!customServices.length) {
-        wrap.className = "custom-service-empty";
-        wrap.innerHTML = "暂无已注册服务";
-        return;
-    }
-    wrap.className = "";
-    wrap.innerHTML = customServices.map(service => {
-        const detail = service.service_type === "llama"
-            ? (service.model || "")
-            : (service.command || "");
-        return `
-        <div class="custom-service-row">
-            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
-            <span style="font-size:0.82em; color:#aaa;">${escapeHtml(serviceTypeBadge(service.service_type))} :${escapeHtml(service.port || "-")}</span>
-            <code title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
-            <div class="custom-service-actions">
-                <button class="btn-secondary" onclick="editService('${escapeHtml(service.id)}')">编辑</button>
-                <button class="btn-danger" onclick="deleteService('${escapeHtml(service.id)}')">删除</button>
-            </div>
-        </div>`;
-    }).join("");
-}
-
-// 启动/运行中列表（启动列表：按运行状态切换按钮）
-function renderLaunchServices() {
-    const wrap = document.getElementById("launch-service-list");
     if (!customServices.length) {
         wrap.className = "custom-service-empty";
         wrap.innerHTML = "暂无已注册服务";
@@ -1010,24 +977,25 @@ function renderLaunchServices() {
     wrap.innerHTML = customServices.map(service => {
         const kind = service.service_type === "llama" ? "llama" : "custom";
         const run = runningMap[service.id];
-        const pidText = run
-            ? `PID ${escapeHtml(run.pid)}`
-            : `<span style="color:#7d8ba3;">未运行</span>`;
-        const actions = run
-            ? `<div class="custom-service-actions">
-                <button class="btn-danger" onclick="stopManagedProcess(${Number(run.pid)})">停止</button>
-                <button class="btn-warning" onclick="restartManagedProcess(${Number(run.pid)})">重启</button>
-                <button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>
-               </div>`
-            : `<div class="custom-service-actions">
-                <button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}', '${escapeHtml(kind)}')">启动</button>
-               </div>`;
+        const detail = service.service_type === "llama"
+            ? (service.model || "")
+            : (service.command || "");
+        const pidSuffix = run ? ` <span style="font-size:0.8em;color:#7d8ba3;">· PID ${escapeHtml(run.pid)}</span>` : "";
+        const launchActions = run
+            ? `<button class="btn-danger" onclick="stopManagedProcess(${Number(run.pid)})">停止</button>
+               <button class="btn-warning" onclick="restartManagedProcess(${Number(run.pid)})">重启</button>
+               <button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>`
+            : `<button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}', '${escapeHtml(kind)}')">启动</button>`;
         return `
         <div class="custom-service-row">
-            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
-            <span style="font-size:0.85em; color:#aaa;">${pidText}</span>
-            <span style="font-size:0.85em;">:${escapeHtml(service.port || "-")} · ${escapeHtml(serviceTypeBadge(service.service_type))}</span>
-            ${actions}
+            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}</strong>
+            <span style="font-size:0.82em; color:#aaa;">${escapeHtml(serviceTypeBadge(service.service_type))} :${escapeHtml(service.port || "-")}</span>
+            <code title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
+            <div class="custom-service-actions">
+                ${launchActions}
+                <button class="btn-secondary" onclick="editService('${escapeHtml(service.id)}')">编辑</button>
+                <button class="btn-danger" onclick="deleteService('${escapeHtml(service.id)}')">删除</button>
+            </div>
         </div>`;
     }).join("");
 }
@@ -1251,7 +1219,7 @@ function updateGpuUI(data) {
             <td>${escapeHtml(formatMem(proc.used_mem))}</td>
             <td>${escapeHtml(formatMem(proc.total_mem))}</td>
             <td>${proc.temperature === null || proc.temperature === undefined ? "-" : escapeHtml(proc.temperature) + " °C"}</td>
-            <td title="${escapeHtml(proc.command || "")}">${escapeHtml(proc.model_name || "Unknown")}</td>
+            <td title="${escapeHtml(proc.command || "")}">${escapeHtml(proc.display_name || proc.model_name || "Unknown")}</td>
             <td>
                 <button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>
                 <button class="btn-danger" onclick="stopManagedProcess(${Number(proc.pid)})">Stop</button>
@@ -1408,7 +1376,7 @@ async function loadManagedProcesses() {
         const data = await api("GET", "/api/managed-processes");
         managedProcessRecords = data.processes || [];
         updateLogProcessSelect();
-        renderLaunchServices();
+        renderRegisteredServices();
     } catch (e) {}
 }
 
