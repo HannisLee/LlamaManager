@@ -579,70 +579,78 @@
         </div>
     </div>
 
-    <!-- 第二块：启动服务 -->
+    <!-- 第二块：服务管理（注册 + 启动） -->
     <div class="card">
-        <h2>启动服务</h2>
+        <h2>服务管理</h2>
+
+        <!-- 注册表单：llama.cpp / vLLM 类型切换 -->
         <div class="form-grid">
-            <label for="start-model">模型</label>
-            <select id="start-model" onchange="onModelChange()">
-                <option value="">-- 请先扫描模型 --</option>
-            </select>
-
-            <label for="start-port" id="start-port-label">Port</label>
-            <input type="number" id="start-port" value="8083">
-
-            <label for="start-extra" id="start-extra-label">Extra Args</label>
-            <input type="text" id="start-extra" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
-
-            <div class="full-width checkbox-row">
-                <input type="checkbox" id="start-auto-kill" checked>
-                <label for="start-auto-kill">端口被占用时自动 kill 占用进程</label>
+            <label>服务类型</label>
+            <div style="display:flex; gap:24px; align-items:center;">
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; text-align:left; margin:0;"><input type="radio" name="svc-type" value="llama" checked onchange="onServiceTypeChange()"> llama.cpp</label>
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; text-align:left; margin:0;"><input type="radio" name="svc-type" value="vllm" onchange="onServiceTypeChange()"> vLLM</label>
             </div>
-
-            <div class="full-width checkbox-row">
-                <input type="checkbox" id="start-incremental" checked>
-                <label for="start-incremental">增量启动（不停止已有受管实例）</label>
-            </div>
-
-            <label>选择 GPU</label>
-            <div id="start-gpu-list" style="display:flex; gap:10px; flex-wrap:wrap; color:#aaa; font-size:0.9em;">
-                <span style="color:#888;">自动使用全部可见 GPU</span>
-            </div>
-        </div>
-        <div class="btn-group" style="margin-top:12px">
-            <button class="btn-success" id="btn-start" onclick="startServer()">Start Server</button>
-        </div>
-        <div id="start-feedback" class="start-feedback"></div>
-    </div>
-
-    <!-- 第三块：vLLM 服务 -->
-    <div class="card">
-        <h2>vLLM 服务</h2>
-        <div id="custom-service-form" class="form-grid">
-            <label for="vllm-repo">仓库模型</label>
-            <select id="vllm-repo" onchange="onVllmRepositoryChange()">
-                <option value="">-- 请先扫描仓库模型 --</option>
-            </select>
-            <div id="vllm-repo-path" class="full-width custom-service-empty">暂无可用仓库模型</div>
 
             <input type="hidden" id="custom-service-id">
 
             <label for="custom-service-name">服务名</label>
-            <input type="text" id="custom-service-name" placeholder="Qwen/Qwen3.5">
+            <input type="text" id="custom-service-name" placeholder="留空则自动用模型/命令推断">
 
-            <label for="custom-service-command">启动命令</label>
-            <textarea id="custom-service-command" rows="3" placeholder="python -m vllm.entrypoints.openai.api_server --model /path/to/repo --host 0.0.0.0 --port 8085"></textarea>
+            <!-- llama.cpp 字段 -->
+            <label for="svc-llama-model" class="svc-llama-field">模型</label>
+            <select id="svc-llama-model" class="svc-llama-field">
+                <option value="">-- 请先扫描模型 --</option>
+            </select>
+
+            <label for="svc-llama-port" class="svc-llama-field">端口</label>
+            <input type="number" id="svc-llama-port" class="svc-llama-field" value="8083">
+
+            <label for="svc-llama-extra" class="svc-llama-field">Extra Args</label>
+            <input type="text" id="svc-llama-extra" class="svc-llama-field" placeholder="-c 4096 --n-gpu-layers 99 --threads 8">
+
+            <label class="svc-llama-field">选择 GPU</label>
+            <div id="start-gpu-list" class="svc-llama-field" style="display:flex; gap:10px; flex-wrap:wrap; color:#aaa; font-size:0.9em;">
+                <span style="color:#888;">自动使用全部可见 GPU</span>
+            </div>
+
+            <!-- vLLM 字段（默认隐藏，切到 vLLM 时显示） -->
+            <label for="vllm-repo" class="svc-vllm-field" style="display:none;">仓库模型</label>
+            <select id="vllm-repo" class="svc-vllm-field" style="display:none;" onchange="onVllmRepositoryChange()">
+                <option value="">-- 请先扫描仓库模型 --</option>
+            </select>
+            <div id="vllm-repo-path" class="full-width svc-vllm-field custom-service-empty" style="display:none;">暂无可用仓库模型</div>
+
+            <label for="custom-service-command" class="svc-vllm-field" style="display:none;">启动命令</label>
+            <textarea id="custom-service-command" class="svc-vllm-field" rows="3" style="display:none;" placeholder="python -m vllm.entrypoints.openai.api_server --model /path/to/repo --host 0.0.0.0 --port 8085"></textarea>
 
             <div class="full-width btn-group">
-                <button class="btn-primary" id="custom-service-save-btn" onclick="saveCustomService()">保存 vLLM 服务</button>
-                <button class="btn-secondary" onclick="resetCustomServiceForm()">取消编辑</button>
-                <button class="btn-secondary" onclick="loadVllmRepositories()">Rescan Repositories</button>
+                <button class="btn-primary" id="custom-service-save-btn" onclick="saveService()">保存服务</button>
+                <button class="btn-secondary" onclick="resetServiceForm()">清空</button>
+                <button class="btn-secondary" onclick="loadModels()">扫描模型</button>
+                <button class="btn-secondary" onclick="loadVllmRepositories()">扫描仓库</button>
             </div>
         </div>
+
+        <!-- 已注册服务（注册列表：增删改） -->
         <div class="custom-service-list">
-            <h3>已注册 vLLM / 自定义服务</h3>
-            <div id="custom-service-list" class="custom-service-empty">暂无已注册服务</div>
+            <h3>已注册服务</h3>
+            <div id="registered-service-list" class="custom-service-empty">暂无已注册服务</div>
         </div>
+
+        <!-- 启动行为全局开关 -->
+        <div class="custom-service-list">
+            <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:center;">
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-auto-kill" checked> 端口被占用时自动 kill</label>
+                <label style="display:flex; gap:6px; align-items:center; color:#e0e0e0; margin:0;"><input type="checkbox" id="start-incremental" checked> 增量启动（不停止已有实例）</label>
+            </div>
+        </div>
+
+        <!-- 启动 / 运行中（启动列表：启停） -->
+        <div class="custom-service-list">
+            <h3>启动 / 运行中</h3>
+            <div id="launch-service-list" class="custom-service-empty">暂无已注册服务</div>
+        </div>
+        <div id="start-feedback" class="start-feedback"></div>
     </div>
 
     <!-- 第四块：服务日志 -->
@@ -702,6 +710,8 @@
             <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
             <label for="set-gpu-history-hours">GPU 历史小时数</label>
             <input type="number" id="set-gpu-history-hours" min="0.25" max="168" step="0.25" value="2">
+            <label for="set-port">默认端口</label>
+            <input type="number" id="set-port" value="8080">
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -781,42 +791,20 @@ async function loadSettings() {
     currentSettings = await api("GET", "/api/settings");
     document.getElementById("set-server-path").value = currentSettings.llama_server_path || "";
     document.getElementById("set-model-dir").value = currentSettings.model_dir || "";
-    document.getElementById("start-port").value = currentSettings.port || 8080;
+    document.getElementById("set-port").value = currentSettings.port || 8080;
     document.getElementById("start-auto-kill").checked = currentSettings.auto_kill_port !== false;
     document.getElementById("set-gpu-history-hours").value = currentSettings.gpu_history_hours || 2;
     return currentSettings;
 }
 
-let modelParams = {};
-
-async function loadModelParams() {
-    try {
-        modelParams = await api("GET", "/api/model-params");
-    } catch (e) {}
-}
-
-function onModelChange() {
-    const model = document.getElementById("start-model").value;
-    const extra = document.getElementById("start-extra");
-    extra.disabled = false;
-    extra.placeholder = "-c 4096 --n-gpu-layers 99 --threads 8";
-    const params = modelParams[model];
-    if (params) {
-        document.getElementById("start-port").value = params.port || 8083;
-        extra.value = params.extra_args || "";
-    } else {
-        // 未启动过的模型，恢复默认
-        document.getElementById("start-port").value = currentSettings.port || 8083;
-        extra.value = "";
-    }
-}
+// model_params 按模型记忆启动参数的机制已废弃：参数随注册服务保存，不再单独记忆
 
 async function saveSettings() {
     const data = {
         llama_server_path: document.getElementById("set-server-path").value,
         model_dir: document.getElementById("set-model-dir").value,
         host: "0.0.0.0",
-        port: parseInt(document.getElementById("start-port").value) || 8080,
+        port: parseInt(document.getElementById("set-port").value) || 8080,
         auto_kill_port: document.getElementById("start-auto-kill").checked,
         gpu_history_hours: parseFloat(document.getElementById("set-gpu-history-hours").value) || 2,
     };
@@ -863,7 +851,7 @@ async function detectLlamaCpp() {
 
 async function loadModels() {
     const data = await api("GET", "/api/models");
-    const select = document.getElementById("start-model");
+    const select = document.getElementById("svc-llama-model");
     const previousValue = select.value;
     // 清空选项
     select.innerHTML = "";
@@ -886,21 +874,35 @@ async function loadModels() {
             select.appendChild(opt);
         });
     }
-    const hasPreviousValue = previousValue && Array.from(select.options).some(opt => opt.value === previousValue);
-    if (hasPreviousValue) {
+    if (previousValue && Array.from(select.options).some(opt => opt.value === previousValue)) {
         select.value = previousValue;
-    } else {
-        onModelChange();
     }
 }
 
-function resetCustomServiceForm() {
+function onServiceTypeChange() {
+    const checked = document.querySelector('input[name="svc-type"]:checked');
+    const type = checked ? checked.value : "llama";
+    const isLlama = type === "llama";
+    document.querySelectorAll(".svc-llama-field").forEach(el => {
+        el.style.display = isLlama ? "" : "none";
+    });
+    document.querySelectorAll(".svc-vllm-field").forEach(el => {
+        el.style.display = isLlama ? "none" : "";
+    });
+    document.getElementById("custom-service-save-btn").textContent = editingCustomServiceId ? "更新服务" : "保存服务";
+}
+
+function resetServiceForm() {
     editingCustomServiceId = "";
     document.getElementById("custom-service-id").value = "";
-    document.getElementById("vllm-repo").value = "";
+    document.getElementById("svc-llama-model").value = "";
+    document.getElementById("svc-llama-port").value = currentSettings.port || 8083;
+    document.getElementById("svc-llama-extra").value = "";
     document.getElementById("custom-service-name").value = "";
+    document.getElementById("vllm-repo").value = "";
     document.getElementById("custom-service-command").value = "";
-    document.getElementById("custom-service-save-btn").textContent = "保存 vLLM 服务";
+    document.querySelectorAll(".start-gpu").forEach(input => { input.checked = false; });
+    document.getElementById("custom-service-save-btn").textContent = "保存服务";
     onVllmRepositoryChange();
 }
 
@@ -954,83 +956,161 @@ function onVllmRepositoryChange() {
 async function loadCustomServices() {
     const serviceData = await api("GET", "/api/custom-services");
     customServices = serviceData.services || [];
-    renderCustomServiceList();
+    renderRegisteredServices();
+    renderLaunchServices();
 }
 
-function renderCustomServiceList() {
-    const wrap = document.getElementById("custom-service-list");
+function serviceTypeBadge(type) {
+    if (type === "llama") return "llama.cpp";
+    return type || "vllm";
+}
+
+// 已注册服务列表（注册列表：仅编辑/删除）
+function renderRegisteredServices() {
+    const wrap = document.getElementById("registered-service-list");
     if (!customServices.length) {
         wrap.className = "custom-service-empty";
         wrap.innerHTML = "暂无已注册服务";
         return;
     }
     wrap.className = "";
-    wrap.innerHTML = customServices.map(service => `
+    wrap.innerHTML = customServices.map(service => {
+        const detail = service.service_type === "llama"
+            ? (service.model || "")
+            : (service.command || "");
+        return `
         <div class="custom-service-row">
             <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
-            <span>:${escapeHtml(service.port || "-")}</span>
-            <code title="${escapeHtml(service.command || "")}">${escapeHtml(service.command || "")}</code>
+            <span style="font-size:0.82em; color:#aaa;">${escapeHtml(serviceTypeBadge(service.service_type))} :${escapeHtml(service.port || "-")}</span>
+            <code title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
             <div class="custom-service-actions">
-                <button class="btn-success" onclick="startCustomService('${escapeHtml(service.id)}')">启动</button>
-                <button class="btn-secondary" onclick="editCustomService('${escapeHtml(service.id)}')">编辑</button>
-                <button class="btn-danger" onclick="deleteCustomService('${escapeHtml(service.id)}')">删除</button>
+                <button class="btn-secondary" onclick="editService('${escapeHtml(service.id)}')">编辑</button>
+                <button class="btn-danger" onclick="deleteService('${escapeHtml(service.id)}')">删除</button>
             </div>
-        </div>
-    `).join("");
+        </div>`;
+    }).join("");
 }
 
-function editCustomService(serviceId) {
-    const service = customServices.find(s => s.id === serviceId);
-    if (!service) {
-        showError("自定义服务不存在");
+// 启动/运行中列表（启动列表：按运行状态切换按钮）
+function renderLaunchServices() {
+    const wrap = document.getElementById("launch-service-list");
+    if (!customServices.length) {
+        wrap.className = "custom-service-empty";
+        wrap.innerHTML = "暂无已注册服务";
         return;
     }
-    editingCustomServiceId = service.id;
-    document.getElementById("custom-service-id").value = service.id;
-    document.getElementById("custom-service-name").value = service.name || "";
-    document.getElementById("custom-service-command").value = service.command || "";
-    const repo = modelRepositories.find(item => service.command && service.command.includes(item.path));
-    if (repo) {
-        document.getElementById("vllm-repo").value = repo.path;
-    }
-    document.getElementById("custom-service-save-btn").textContent = "更新 vLLM 服务";
-    onVllmRepositoryChange();
+    // service_id -> 运行中的受管进程
+    const runningMap = {};
+    (managedProcessRecords || []).forEach(proc => {
+        if (proc && proc.service_id && proc.running !== false) {
+            runningMap[proc.service_id] = proc;
+        }
+    });
+    wrap.className = "";
+    wrap.innerHTML = customServices.map(service => {
+        const kind = service.service_type === "llama" ? "llama" : "custom";
+        const run = runningMap[service.id];
+        const pidText = run
+            ? `PID ${escapeHtml(run.pid)}`
+            : `<span style="color:#7d8ba3;">未运行</span>`;
+        const actions = run
+            ? `<div class="custom-service-actions">
+                <button class="btn-danger" onclick="stopManagedProcess(${Number(run.pid)})">停止</button>
+                <button class="btn-warning" onclick="restartManagedProcess(${Number(run.pid)})">重启</button>
+                <button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>
+               </div>`
+            : `<div class="custom-service-actions">
+                <button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}', '${escapeHtml(kind)}')">启动</button>
+               </div>`;
+        return `
+        <div class="custom-service-row">
+            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}</strong>
+            <span style="font-size:0.85em; color:#aaa;">${pidText}</span>
+            <span style="font-size:0.85em;">:${escapeHtml(service.port || "-")} · ${escapeHtml(serviceTypeBadge(service.service_type))}</span>
+            ${actions}
+        </div>`;
+    }).join("");
 }
 
-async function saveCustomService() {
-    const id = document.getElementById("custom-service-id").value || editingCustomServiceId;
-    const name = document.getElementById("custom-service-name").value.trim();
-    const command = document.getElementById("custom-service-command").value.trim();
-    if (!command) {
-        showError("请输入启动命令");
-        return;
-    }
-    try {
-        const payload = { name, command, service_type: "vllm" };
-        if (id) payload.id = id;
-        await api("POST", "/api/custom-services", payload);
-        resetCustomServiceForm();
-        await loadCustomServices();
-    } catch (e) {}
-}
-
-async function startCustomService(serviceId) {
+function editService(serviceId) {
     const service = customServices.find(s => s.id === serviceId);
     if (!service) {
         showError("服务不存在");
         return;
     }
+    editingCustomServiceId = service.id;
+    document.getElementById("custom-service-id").value = service.id;
+    document.getElementById("custom-service-name").value = service.name || "";
+    // 按类型切换字段并回填
+    const isLlama = service.service_type === "llama";
+    const radio = document.querySelector(`input[name="svc-type"][value="${isLlama ? "llama" : "vllm"}"]`);
+    if (radio) radio.checked = true;
+    onServiceTypeChange();
+    if (isLlama) {
+        document.getElementById("svc-llama-model").value = service.model || "";
+        document.getElementById("svc-llama-port").value = service.port || 8083;
+        document.getElementById("svc-llama-extra").value = service.extra_args || "";
+        const gpus = Array.isArray(service.gpu_indexes) ? service.gpu_indexes : [];
+        document.querySelectorAll(".start-gpu").forEach(input => {
+            input.checked = gpus.includes(parseInt(input.value));
+        });
+    } else {
+        document.getElementById("custom-service-command").value = service.command || "";
+        const repo = modelRepositories.find(item => service.command && service.command.includes(item.path));
+        if (repo) {
+            document.getElementById("vllm-repo").value = repo.path;
+        }
+        onVllmRepositoryChange();
+    }
+    document.getElementById("custom-service-save-btn").textContent = "更新服务";
+}
+
+async function saveService() {
+    const id = document.getElementById("custom-service-id").value || editingCustomServiceId;
+    const name = document.getElementById("custom-service-name").value.trim();
+    const type = document.querySelector('input[name="svc-type"]:checked').value;
+    let payload;
+    if (type === "llama") {
+        const model = document.getElementById("svc-llama-model").value.trim();
+        if (!model) {
+            showError("请选择模型");
+            return;
+        }
+        payload = {
+            service_type: "llama",
+            name,
+            model,
+            port: parseInt(document.getElementById("svc-llama-port").value) || 8080,
+            extra_args: document.getElementById("svc-llama-extra").value,
+            gpu_indexes: selectedGpuIndexes(),
+        };
+    } else {
+        const command = document.getElementById("custom-service-command").value.trim();
+        if (!command) {
+            showError("请输入启动命令");
+            return;
+        }
+        payload = { service_type: "vllm", name, command };
+    }
+    if (id) payload.id = id;
+    try {
+        await api("POST", "/api/custom-services", payload);
+        resetServiceForm();
+        await loadCustomServices();
+    } catch (e) {}
+}
+
+async function startRegisteredService(serviceId, kind) {
     try {
         const result = await api("POST", "/api/start", {
-            model: `custom:${serviceId}`,
+            model: `${kind}:${serviceId}`,
             host: "0.0.0.0",
             auto_kill_port: document.getElementById("start-auto-kill").checked,
             incremental_start: document.getElementById("start-incremental").checked,
-            gpu_indexes: selectedGpuIndexes(),
         });
         const feedback = document.getElementById("start-feedback");
         feedback.style.display = "block";
-        feedback.innerHTML = `<strong>已提交 vLLM 服务</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
+        feedback.innerHTML = `<strong>已提交启动</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
         await loadGpuStatus();
         await loadManagedProcesses();
         const logSelect = document.getElementById("log-process-select");
@@ -1041,7 +1121,7 @@ async function startCustomService(serviceId) {
     } catch (e) {}
 }
 
-async function deleteCustomService(serviceId) {
+async function deleteService(serviceId) {
     const service = customServices.find(s => s.id === serviceId);
     const label = service ? service.name : serviceId;
     if (!confirm(`删除服务 ${label}？`)) {
@@ -1050,7 +1130,7 @@ async function deleteCustomService(serviceId) {
     try {
         await api("DELETE", `/api/custom-services/${encodeURIComponent(serviceId)}`);
         if (editingCustomServiceId === serviceId) {
-            resetCustomServiceForm();
+            resetServiceForm();
         }
         await loadCustomServices();
     } catch (e) {}
@@ -1295,69 +1375,9 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 
 // ── 启动 / 停止 / 重启 ───────────────────────────────
 
-async function startServer() {
-    const model = document.getElementById("start-model").value;
-    if (!model) {
-        showError("请选择要启动的 GGUF 模型");
-        return;
-    }
-    const startBtn = document.getElementById("btn-start");
-    const feedback = document.getElementById("start-feedback");
-    const originalText = startBtn.textContent;
-    const body = {
-        model,
-        host: "0.0.0.0",
-        auto_kill_port: document.getElementById("start-auto-kill").checked,
-        incremental_start: document.getElementById("start-incremental").checked,
-        gpu_indexes: selectedGpuIndexes(),
-        port: parseInt(document.getElementById("start-port").value) || 8080,
-        extra_args: document.getElementById("start-extra").value,
-    };
+// 一次性 llama 启动已废弃：所有启动都走 startRegisteredService（基于已注册服务）
 
-    try {
-        startBtn.disabled = true;
-        startBtn.textContent = "Starting...";
-        feedback.style.display = "block";
-        feedback.textContent = "服务启动中...";
-        const result = await api("POST", "/api/start", body);
-        feedback.innerHTML = `<strong>已提交启动</strong> PID ${escapeHtml(result.pid)} · Port ${escapeHtml(result.port || "-")}。如服务仍在加载，请查看下方服务日志。`;
-        await loadGpuStatus();
-        await loadManagedProcesses();
-        const logSelect = document.getElementById("log-process-select");
-        if (result.pid) {
-            logSelect.value = String(result.pid);
-        }
-        await loadLogs();
-    } catch (e) {
-        feedback.style.display = "block";
-        feedback.textContent = "启动失败，请查看顶部错误提示。";
-    } finally {
-        startBtn.disabled = false;
-        startBtn.textContent = originalText;
-    }
-}
-
-async function stopServer() {
-    try {
-        await api("POST", "/api/stop");
-        document.getElementById("log-area").value = "";
-        loadGpuStatus();
-        loadManagedProcesses();
-    } catch (e) {}
-}
-
-async function restartServer() {
-    try {
-        await api("POST", "/api/restart");
-        loadGpuStatus();
-        loadManagedProcesses();
-        loadLogs();
-    } catch (e) {}
-}
-
-function openWebUI() {
-    window.open("/llama/", "_blank");
-}
+// 基于「当前实例」的一次性 stop/restart/openWebUI 已随启动改造废弃，统一用受管进程的 stop/restart/open
 
 function openManagedWebUI(pid) {
     window.open(`/llama-process/${pid}/`, "_blank");
@@ -1388,6 +1408,7 @@ async function loadManagedProcesses() {
         const data = await api("GET", "/api/managed-processes");
         managedProcessRecords = data.processes || [];
         updateLogProcessSelect();
+        renderLaunchServices();
     } catch (e) {}
 }
 
@@ -1593,8 +1614,8 @@ async function loadDownloadLogs() {
 document.addEventListener("DOMContentLoaded", () => {
     initGpuCardsPerRow();
     loadSettings()
-        .then(() => loadModelParams())
-        .then(() => Promise.all([loadModels(), loadVllmRepositories(), loadCustomServices()]));
+        .then(() => Promise.all([loadModels(), loadVllmRepositories(), loadCustomServices()]))
+        .then(() => onServiceTypeChange());
     loadGpuStatus();
     loadManagedProcesses();
     loadLogs();

@@ -217,3 +217,13 @@
 - 下载日志改为按任务写入 `logs/downloads/<task_id>.log`，前端支持下拉选择查看
 - 下载表单只负责新增任务，下载进度和 Cancel/Logs 操作移到下方任务列表
 - spec.md 同步更新多下载任务接口和页面行为说明
+
+## v0.1.11 — 2026-06-18
+
+- 合并「启动服务」与「vLLM 服务」两块卡片为统一的「服务管理」卡片：llama.cpp 与 vLLM 两类服务统一为「先注册、再从列表启动」模式，移除 llama.cpp 一次性启动表单
+- 注册表单支持类型切换（llama.cpp / vLLM），字段随类型变化；新增「已注册服务」列表（编辑/删除）与「启动/运行中」列表（按 service_id 匹配运行状态，切换 启动 / 停止·重启·打开）
+- `custom_services` 注册表扩展支持 `service_type=llama`（含 model/port/extra_args/gpu_indexes 字段），`_normalize_custom_service` 按 service_type 分 llama/vllm 两支校验，记录结构为两类字段超集
+- `/api/start` 改为基于已注册服务：`custom:<id>` 启 vLLM、`llama:<id>` 启 llama.cpp，无前缀一律拒绝；llama.cpp 参数从注册表读取，两类进程记录均写入 `service_id` 供前端匹配运行状态
+- 应用启动时自动将旧版 `model_params` 迁移为 llama.cpp 注册项并清空（name 取模型文件名，幂等），废弃按模型路径记忆启动参数的机制
+- 设置区新增独立「默认端口」字段，解耦原启动表单对全局 port/auto_kill_port 配置的借用
+- spec.md 同步更新端点语义、启动流程、数据结构与页面布局

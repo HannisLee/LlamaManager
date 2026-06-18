@@ -247,6 +247,56 @@ def _migrate_legacy_state_files():
 _migrate_legacy_state_files()
 
 
+def _migrate_model_params_to_services():
+    """将旧版 model_params（按模型路径记忆的启动参数）迁移为 llama.cpp 注册服务"""
+    with _settings_lock:
+        settings = _load_settings_raw()
+        params = settings.get(MODEL_PARAMS_KEY, {})
+        if not isinstance(params, dict) or not params:
+            return
+        services = settings.get(CUSTOM_SERVICES_KEY, {})
+        if not isinstance(services, dict):
+            services = {}
+        # 幂等：已存在同 model 路径的 llama 注册项则跳过
+        existing_models = {
+            svc.get("model")
+            for svc in services.values()
+            if isinstance(svc, dict) and svc.get("service_type") == "llama"
+        }
+        changed = False
+        for model_path, param in params.items():
+            if not isinstance(model_path, str) or not model_path.strip():
+                continue
+            if model_path in existing_models:
+                continue
+            param = param if isinstance(param, dict) else {}
+            try:
+                port = int(param.get("port") or 8080)
+            except (TypeError, ValueError):
+                port = 8080
+            extra_args = str(param.get("extra_args") or "").strip()
+            service_id = f"svc_{uuid.uuid4().hex[:12]}"
+            services[service_id] = {
+                "id": service_id,
+                "name": Path(model_path).name,
+                "service_type": "llama",
+                "model": model_path,
+                "port": port,
+                "extra_args": extra_args,
+                "gpu_indexes": [],
+                "command": None,
+                "created_at": time.time(),
+            }
+            changed = True
+        if changed:
+            settings[CUSTOM_SERVICES_KEY] = services
+            settings[MODEL_PARAMS_KEY] = {}
+            _write_settings_raw(settings)
+
+
+_migrate_model_params_to_services()
+
+
 def _llama_server_paths_from_env_value(value: str) -> list[Path]:
     """从环境变量值推断可能的 llama-server 路径"""
     if not value or not isinstance(value, str):
@@ -563,28 +613,72 @@ def _infer_custom_service_name(tokens: list, command: str) -> str:
 
 
 def _normalize_custom_service(raw: dict) -> dict:
-    """校验并标准化自定义服务注册数据"""
+    """校验并标准化服务注册数据（支持 llama / vllm 两类，字段为两类超集）"""
+    service_type = str(raw.get("service_type") or "vllm").strip().lower() or "vllm"
+    if service_type == "custom":
+        # 兼容旧版「自定义服务」数据，统一归到 vllm 分支处理
+        service_type = "vllm"
+    if service_type not in {"llama", "vllm"}:
+        raise HTTPException(status_code=400, detail=f"不支持的服务类型: {service_type}")
+
+    service_id = str(raw.get("id") or f"svc_{uuid.uuid4().hex[:12]}")
+    created_at = raw.get("created_at") or time.time()
+    name = str(raw.get("name") or "").strip()
+
+    if service_type == "llama":
+        # llama.cpp 服务：必须指定模型，端口/参数/GPU 存注册项，运行时由 _build_command 拼命令
+        model = str(raw.get("model") or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="llama.cpp 服务必须指定模型文件")
+        try:
+            port = int(raw.get("port") or 8080)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="端口必须是数字")
+        if port <= 0 or port > 65535:
+            raise HTTPException(status_code=400, detail="端口范围必须是 1-65535")
+        extra_args = str(raw.get("extra_args") or "").strip()
+        err = _validate_extra_args(extra_args)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        gpu_indexes = _parse_gpu_indexes(raw.get("gpu_indexes", []))
+        if not name:
+            name = Path(model).name
+        return {
+            "id": service_id,
+            "name": name,
+            "service_type": "llama",
+            "model": model,
+            "port": port,
+            "extra_args": extra_args,
+            "gpu_indexes": gpu_indexes,
+            "command": None,
+            "created_at": created_at,
+        }
+
+    # vllm 服务：原样保存启动命令，端口从命令 --port 解析
     command = str(raw.get("command", "")).strip()
     tokens = _command_tokens(command)
-    service_type = str(raw.get("service_type") or "custom").strip() or "custom"
     port_value = _get_option_value(tokens, {"--port"})
     if port_value in (None, ""):
-        raise HTTPException(status_code=400, detail="自定义服务命令必须包含 --port")
+        raise HTTPException(status_code=400, detail="vLLM 服务命令必须包含 --port")
     try:
         port = int(port_value)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="端口必须是数字")
     if port <= 0 or port > 65535:
         raise HTTPException(status_code=400, detail="端口范围必须是 1-65535")
-    name = str(raw.get("name") or "").strip() or _infer_custom_service_name(tokens, command)
-    service_id = str(raw.get("id") or f"svc_{uuid.uuid4().hex[:12]}")
+    if not name:
+        name = _infer_custom_service_name(tokens, command)
     return {
         "id": service_id,
         "name": name,
-        "service_type": service_type,
-        "command": command,
+        "service_type": "vllm",
+        "model": None,
         "port": port,
-        "created_at": raw.get("created_at") or time.time(),
+        "extra_args": None,
+        "gpu_indexes": None,
+        "command": command,
+        "created_at": created_at,
     }
 
 
@@ -1482,47 +1576,59 @@ async def start_server(body: dict = None):
 
     settings = _load_settings()
 
-    # 合并参数
-    model = body.get("model") or settings.get("model", "")
-    service_kind = "custom" if isinstance(model, str) and model.startswith("custom:") else "llama"
-    service_id = model.split(":", 1)[1] if service_kind == "custom" else None
-    custom_service = None
-    if service_kind == "custom":
-        custom_service = _load_custom_services().get(service_id)
-        if custom_service is None:
-            raise HTTPException(status_code=400, detail=f"自定义服务不存在: {service_id}")
-    host = body.get("host") or settings.get("host", "0.0.0.0")
-    if service_kind == "custom":
-        port = int(custom_service["port"])
+    # 解析服务引用：custom:<id> 启动 vllm 服务，llama:<id> 启动 llama.cpp 服务
+    model = body.get("model") or ""
+    if isinstance(model, str) and model.startswith("custom:"):
+        service_kind = "custom"
+        service_id = model.split(":", 1)[1]
+    elif isinstance(model, str) and model.startswith("llama:"):
+        service_kind = "llama"
+        service_id = model.split(":", 1)[1]
     else:
-        port = int(body.get("port") or settings.get("port", 8080))
-    extra_args = body.get("extra_args", "")
-    incremental_start = body.get("incremental_start", True) is not False
-    gpu_indexes = _parse_gpu_indexes(body.get("gpu_indexes", []))
+        raise HTTPException(
+            status_code=400,
+            detail="启动必须基于已注册服务，model 需为 custom:<id> 或 llama:<id>"
+        )
 
-    # 校验 extra_args
-    if service_kind == "llama":
-        err = _validate_extra_args(extra_args)
-        if err:
-            raise HTTPException(status_code=400, detail=err)
+    custom_service = _load_custom_services().get(service_id)
+    if custom_service is None:
+        raise HTTPException(status_code=400, detail=f"注册服务不存在: {service_id}")
+    expected_type = "vllm" if service_kind == "custom" else "llama"
+    if custom_service.get("service_type") != expected_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"注册服务类型不匹配: {service_id}（期望 {expected_type}）"
+        )
+
+    host = body.get("host") or settings.get("host", "0.0.0.0")
+    port = int(custom_service["port"])
+    incremental_start = body.get("incremental_start", True) is not False
+    if service_kind == "custom":
+        # vllm 服务的 GPU 选择由启动时传入（默认空=全部 GPU）
+        extra_args = ""
+        gpu_indexes = _parse_gpu_indexes(body.get("gpu_indexes", []))
+    else:
+        # llama.cpp 服务参数全部来自注册项
+        extra_args = custom_service.get("extra_args") or ""
+        gpu_indexes = _parse_gpu_indexes(custom_service.get("gpu_indexes") or [])
 
     llama_server_path = settings.get("llama_server_path", "")
     auto_kill_port = body.get("auto_kill_port", settings.get("auto_kill_port", True))
     protected_ports = settings.get("protected_ports", [22])
 
-    # 校验 llama-server 路径
-    if service_kind == "llama" and (not llama_server_path or not Path(llama_server_path).is_file()):
-        raise HTTPException(
-            status_code=400,
-            detail=f"llama-server 不存在: {llama_server_path}"
-        )
-
-    # 校验模型文件
-    if service_kind == "llama" and (not model or not Path(model).is_file()):
-        raise HTTPException(
-            status_code=400,
-            detail=f"模型文件不存在: {model}"
-        )
+    # llama.cpp 服务校验：可执行文件与模型文件必须存在
+    if service_kind == "llama":
+        model_file = custom_service.get("model") or ""
+        if not llama_server_path or not Path(llama_server_path).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"llama-server 不存在: {llama_server_path}"
+            )
+        if not model_file or not Path(model_file).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"模型文件不存在: {model_file}"
+            )
 
     killed_info = None
     with _process_lock:
@@ -1543,22 +1649,21 @@ async def start_server(body: dict = None):
             killed_info = _kill_port_occupant(port, protected_ports)
 
         # 构建启动命令
+        display_name = custom_service["name"]
         if service_kind == "custom":
-            display_name = custom_service["name"]
-            service_type = custom_service.get("service_type", "custom")
+            service_type = custom_service.get("service_type", "vllm")
             cmd = _build_custom_command(custom_service)
             model_for_record = f"custom:{custom_service['id']}"
         else:
-            display_name = Path(model).name
             service_type = "llama"
             overrides = {
-                "model": model,
+                "model": custom_service["model"],
                 "host": host,
                 "port": port,
                 "extra_args": extra_args,
             }
             cmd = _build_command(settings, overrides)
-            model_for_record = model
+            model_for_record = custom_service["model"]
 
         # 准备日志目录
         log_path = _create_process_log_path(service_type, display_name, port)
@@ -1607,10 +1712,6 @@ async def start_server(body: dict = None):
         _current_model = model_for_record
         _current_port = port
         _current_host = host
-
-    # 按模型保存启动参数
-    if service_kind == "llama":
-        _save_model_param(model, port, extra_args)
 
     result = {
         "ok": True,
