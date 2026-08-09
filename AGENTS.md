@@ -7,7 +7,7 @@
 - **架构文档**: 参见 [spec.md](spec.md)
 - **变更记录**: 参见 [version.md](version.md)
 - **环境**: conda 环境 `llama-manager`，Python 3.12
-- **启动**: `conda activate llama-manager && bash run.sh`（管理后台 `0.0.0.0:8082`）
+- **启动**: `conda activate llama-manager && bash run.sh`（管理后台 `0.0.0.0:8081`）
 
 ## 代码规范
 
@@ -29,7 +29,7 @@
 ## 关键约束
 
 - 不要引入数据库、前端框架、构建工具
-- 不要修改 run.sh 中的端口号（8082）和绑定地址（0.0.0.0），除非用户明确要求
+- 不要修改 run.sh 中的端口号（8081）和绑定地址（0.0.0.0），除非用户明确要求
 - settings.json 中的路径使用 `~` 时，后端需要 `Path.expanduser()` 展开
 - extra_args 必须经过 `_validate_extra_args()` 校验
 - 所有新增 API 端点必须在 spec.md 中同步更新

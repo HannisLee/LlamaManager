@@ -29,7 +29,7 @@ conda activate llama-manager
 bash run.sh
 ```
 
-管理后台访问地址: http://localhost:8082
+管理后台访问地址: http://localhost:8081
 
 ## 配置
 
@@ -47,6 +47,6 @@ bash run.sh
 
 ## 安全提示
 
-- 管理后台默认绑定 `0.0.0.0:8082`，可被同一网络内其他设备访问
+- 管理后台默认绑定 `0.0.0.0:8081`，可被同一网络内其他设备访问
 - 如需公网部署，请自行配置防火墙或反向代理认证
 - `protected_ports` 默认包含 `22`，防止误杀 SSH 连接

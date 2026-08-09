@@ -425,4 +425,4 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 - protected_ports 防止误杀 SSH（端口 22）
 - PID 1 永远不会被 kill
 - settings.json 使用原子写入防止损坏
-- 管理后台绑定 `0.0.0.0:8082`，README 中提醒公网暴露风险
+- 管理后台绑定 `0.0.0.0:8081`，README 中提醒公网暴露风险
