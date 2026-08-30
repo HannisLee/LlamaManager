@@ -202,6 +202,7 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 6. subprocess.Popen 启动，stdout/stderr 重定向到 `logs/services/<type>-<name>-<port>-<timestamp>.log`
 7. 写入 `_managed_processes[pid]` 和 `settings.json.managed_processes`，含 `service_kind`/`service_type`/`service_id`（两类均写入 service_id），记录 `process_create_time` 用于重启后校验 PID 身份
 8. 「已注册服务」列表按 service_id 匹配受管进程：未运行显示「启动」，运行中显示 PID 并提供 停止/重启/打开，另可编辑/删除
+9. 自定义服务命令以 `conda` 开头时，后端优先从 PATH、`CONDA_EXE` 与用户目录下常见 Conda 安装位置解析可执行文件，避免服务进程 PATH 不完整时启动失败
 
 **后台重启后的受管进程恢复：**
 - 每次启动、停止、状态同步时，后端将受管进程元数据写入 `settings.json.managed_processes`

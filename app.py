@@ -1301,7 +1301,29 @@ def _build_command(settings: dict, overrides: dict) -> list:
 
 def _build_custom_command(service: dict) -> list:
     """构建自定义服务启动命令，按注册命令原样执行"""
-    return _command_tokens(service["command"])
+    cmd = _command_tokens(service["command"])
+    if not cmd or cmd[0] != "conda":
+        return cmd
+
+    # 后台以 systemd 等方式启动时，PATH 可能未包含 Conda 的安装目录。
+    # 为 conda run 解析绝对路径，避免 Qwen3-ASR 等服务因找不到 conda 而无法启动。
+    conda_path = shutil.which("conda")
+    if not conda_path:
+        candidates = []
+        conda_exe = os.environ.get("CONDA_EXE")
+        if conda_exe:
+            candidates.append(Path(conda_exe).expanduser())
+        for name in ("miniconda3", "anaconda3", "mambaforge", "miniforge3"):
+            candidates.append(Path.home() / name / "bin" / "conda")
+
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                conda_path = str(candidate)
+                break
+
+    if conda_path:
+        cmd[0] = conda_path
+    return cmd
 
 
 def _kill_port_occupant(port: int, protected: list) -> Optional[dict]:
