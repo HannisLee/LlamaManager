@@ -122,6 +122,7 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/api/asr/history` | 返回本地 ASR 历史记录摘要（不含全文） |
 | GET | `/api/asr/history/{record_id}/text` | 读取指定本地 ASR 历史的全文 |
 | PATCH | `/api/asr/history/{record_id}` | 修改指定 ASR 历史记录的自定义名称 |
+| DELETE | `/api/asr/history/{record_id}` | 删除已结束的 ASR 历史记录及其保存的全文 |
 | GET | `/api/asr/{pid}` | 获取指定 Qwen3-ASR-1.7B 实例的转写页信息 |
 | POST | `/api/asr/{pid}/transcriptions` | 上传一个音频，创建历史 item 并在后台队列中转写，立即返回 `202` |
 | POST | `/api/start` | 启动已注册服务（model 为 `custom:<id>` 启 vLLM，或 `llama:<id>` 启 llama.cpp） |
@@ -228,7 +229,7 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
 5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
 6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
-7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数和状态；只有点击「已完成」条目时才按需读取全文，并可修改记录名称
+7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数和状态；只有点击「已完成」条目时才按需读取全文，并可修改记录名称或删除已结束的记录
 
 **下载模型：**
 1. 校验仓库名（`owner/repo`）；指定文件名时校验 `.gguf` 结尾，留空则全量下载

@@ -353,8 +353,13 @@
             overflow: hidden;
             background: #101b32;
         }
+        .asr-history-header {
+            display: flex;
+            align-items: stretch;
+        }
         .asr-history-toggle {
-            width: 100%;
+            flex: 1 1 auto;
+            min-width: 0;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -376,6 +381,11 @@
         .asr-history-toggle .badge {
             flex: 0 0 auto;
             white-space: nowrap;
+        }
+        .asr-history-delete {
+            flex: 0 0 auto;
+            align-self: center;
+            margin: 0 10px 0 0;
         }
         .asr-history-meta {
             flex: 0 0 auto;
@@ -997,12 +1007,15 @@ function renderAsrHistory() {
             </div>` : "";
         return `
             <div class="asr-history-item">
-                <button class="asr-history-toggle" onclick="toggleAsrHistoryItem('${record.id}')" title="${escapeHtml(meta)}">
-                    <span>${expanded ? "▾" : "▸"}</span>
-                    <strong>${escapeHtml(record.name || "未命名转写")}</strong>
-                    <span class="${asrStatusClass(status)}">${asrStatusLabel(status)}</span>
-                    <span class="asr-history-meta">${escapeHtml(formatAsrDate(record.uploaded_at))}</span>
-                </button>
+                <div class="asr-history-header">
+                    <button class="asr-history-toggle" onclick="toggleAsrHistoryItem('${record.id}')" title="${escapeHtml(meta)}">
+                        <span>${expanded ? "▾" : "▸"}</span>
+                        <strong>${escapeHtml(record.name || "未命名转写")}</strong>
+                        <span class="${asrStatusClass(status)}">${asrStatusLabel(status)}</span>
+                        <span class="asr-history-meta">${escapeHtml(formatAsrDate(record.uploaded_at))}</span>
+                    </button>
+                    <button class="btn-danger asr-history-delete" onclick="deleteAsrHistory('${record.id}')" title="删除这条转写历史">删除</button>
+                </div>
                 ${content}
             </div>`;
     }).join("");
@@ -1049,6 +1062,19 @@ async function saveAsrHistoryName(recordId) {
         if (record) record.name = name;
         asrExpandedRecordId = "";
         await toggleAsrHistoryItem(recordId);
+    } catch (e) {}
+}
+
+async function deleteAsrHistory(recordId) {
+    const record = asrHistoryRecords.find(item => item.id === recordId);
+    if (!record) return;
+    const name = record.name || record.original_filename || "这条转写历史";
+    if (!window.confirm(`确认删除“${name}”吗？此操作会同时删除已保存的转写文字。`)) return;
+    try {
+        await api("DELETE", `/api/asr/history/${encodeURIComponent(recordId)}`);
+        asrHistoryTextCache.delete(recordId);
+        if (asrExpandedRecordId === recordId) asrExpandedRecordId = "";
+        await loadAsrHistory();
     } catch (e) {}
 }
 

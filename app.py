@@ -1856,6 +1856,29 @@ def _find_asr_history_record(record_id: str) -> dict:
     raise HTTPException(status_code=404, detail="转写历史不存在")
 
 
+def _delete_asr_history_record(record_id: str) -> dict:
+    """删除已结束的 ASR 历史记录及其保存的转写全文。"""
+    with _asr_history_lock:
+        records = _load_asr_history()
+        for index, record in enumerate(records):
+            if record.get("id") != record_id:
+                continue
+            if record.get("status") in {"queued", "transcribing"}:
+                raise HTTPException(status_code=409, detail="转写进行中，暂时不能删除")
+            deleted_record = records.pop(index)
+            _write_asr_history(records)
+            transcript_name = Path(str(deleted_record.get("transcript_file") or "")).name
+            if transcript_name:
+                try:
+                    (ASR_HISTORY_DIR / transcript_name).unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise HTTPException(status_code=500, detail="历史记录已删除，但清理转写文本失败") from exc
+            return _asr_history_snapshot(deleted_record)
+    raise HTTPException(status_code=404, detail="转写历史不存在")
+
+
 # ── API 端点 ──────────────────────────────────────────────
 
 @app.get("/")
@@ -1914,6 +1937,13 @@ async def update_asr_history_name(record_id: str, body: dict = None):
                 _write_asr_history(records)
                 return JSONResponse({"ok": True, "record": _asr_history_snapshot(record)})
     raise HTTPException(status_code=404, detail="转写历史不存在")
+
+
+@app.delete("/api/asr/history/{record_id}")
+async def delete_asr_history(record_id: str):
+    """删除一条已结束的本地 ASR 转写历史。"""
+    record = _delete_asr_history_record(record_id)
+    return JSONResponse({"ok": True, "record": record})
 
 
 @app.get("/api/asr/{pid}")
