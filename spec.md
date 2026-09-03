@@ -224,8 +224,8 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 **Qwen3-ASR-1.7B 专用转写：**
 1. 前端识别运行中的 vLLM 服务名、模型或命令中含 `Qwen3-ASR-1.7B` 的实例，将该实例的 Open 跳转到 `/asr/{pid}`；其他服务仍打开原反向代理页
 2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，并行上传到 `/api/asr/{pid}/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
-3. 后端只接受仍在运行的 Qwen3-ASR-1.7B vLLM 受管实例，将音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；单片最长 600 秒
-4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记
+3. 后端只接受仍在运行的 Qwen3-ASR-1.7B vLLM 受管实例，将音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
+4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
 5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
 6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
 7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数和状态；只有点击「已完成」条目时才按需读取全文，并可修改记录名称

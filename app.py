@@ -70,6 +70,8 @@ _download_lock = threading.Lock()
 # ── Qwen3 ASR 临时转写 ────────────────────────────────────
 ASR_MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
 ASR_MAX_CHUNK_SECONDS = 600
+ASR_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
+ASR_MIN_CHUNK_SECONDS = 15
 ASR_ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
 }
@@ -1568,6 +1570,38 @@ def _asr_build_chunks(intervals: list[tuple[float, float]], total_duration: floa
     return [(round(start, 3), round(end, 3)) for start, end in chunks if end > start]
 
 
+def _asr_split_chunk(start: float, end: float, count: int) -> list[tuple[float, float]]:
+    """将一个过大的时间段均分为多个连续片段。"""
+    duration = end - start
+    if count < 2 or duration <= 0:
+        return [(start, end)]
+    length = duration / count
+    return [
+        (round(start + length * index, 3), round(end if index == count - 1 else start + length * (index + 1), 3))
+        for index in range(count)
+    ]
+
+
+def _asr_split_count_for_size(duration: float, file_size: int) -> int:
+    """根据已导出的 FLAC 大小估算安全的二次切片数。"""
+    by_size = math.ceil(file_size / ASR_TARGET_CHUNK_BYTES)
+    by_duration = max(1, math.floor(duration / ASR_MIN_CHUNK_SECONDS))
+    return min(max(2, by_size), by_duration)
+
+
+def _export_asr_chunk(input_path: Path, chunk_path: Path, start: float, end: float) -> int:
+    """导出一个 FLAC 转写片段并返回其实际文件大小。"""
+    _run_asr_command([
+        "ffmpeg", "-hide_banner", "-y", "-ss", f"{start:.3f}",
+        "-t", f"{end - start:.3f}", "-i", str(input_path), "-vn",
+        "-c:a", "flac", str(chunk_path),
+    ])
+    try:
+        return chunk_path.stat().st_size
+    except OSError as exc:
+        raise RuntimeError("无法读取转写切片文件") from exc
+
+
 def _asr_extract_text(response: dict) -> str:
     """兼容 Qwen ASR 的 text 与 OpenAI choices 两种返回格式。"""
     text = response.get("text")
@@ -1583,7 +1617,7 @@ def _asr_extract_text(response: dict) -> str:
 
 
 def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
-    """切片并逐片请求本机 Qwen3-ASR 服务，返回合并后的全文。"""
+    """按时长和实际文件大小切片，再逐片请求本机 Qwen3-ASR 服务。"""
     total_duration = _asr_probe_duration(input_path)
     chunks = _asr_build_chunks(_asr_speech_intervals(input_path, total_duration), total_duration)
     if not chunks:
@@ -1591,16 +1625,39 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
 
     endpoint = f"http://127.0.0.1:{int(item['port'])}/v1/audio/transcriptions"
     model = _qwen3_asr_model_from_command(item.get("command") or [])
+    # FLAC 的压缩率随音频内容变化很大，不能只按时长判断是否会超过 vLLM
+    # 的文件大小限制。导出后超过安全阈值的片段会被继续二分（或多分）。
+    pending_chunks = list(chunks)
+    completed_chunks = 0
+    chunk_serial = 0
+    chunk_position = 0
     texts: list[str] = []
     timeout = httpx.Timeout(900.0, connect=10.0)
     with httpx.Client(timeout=timeout) as client:
-        for index, (start, end) in enumerate(chunks, start=1):
-            chunk_path = work_dir / f"chunk-{index:03d}.flac"
-            _run_asr_command([
-                "ffmpeg", "-hide_banner", "-y", "-ss", f"{start:.3f}",
-                "-t", f"{end - start:.3f}", "-i", str(input_path), "-vn",
-                "-c:a", "flac", str(chunk_path),
-            ])
+        while chunk_position < len(pending_chunks):
+            start, end = pending_chunks[chunk_position]
+            duration = end - start
+            chunk_serial += 1
+            chunk_path = work_dir / f"chunk-{chunk_serial:03d}.flac"
+            file_size = _export_asr_chunk(input_path, chunk_path, start, end)
+
+            if file_size > ASR_TARGET_CHUNK_BYTES:
+                split_count = _asr_split_count_for_size(duration, file_size)
+                if split_count < 2:
+                    raise RuntimeError(
+                        f"第 {completed_chunks + 1} 段 FLAC 大小为 "
+                        f"{file_size / 1024 / 1024:.1f} MB，无法在保证至少 "
+                        f"{ASR_MIN_CHUNK_SECONDS} 秒长度的前提下继续切分"
+                    )
+                pending_chunks[chunk_position:chunk_position + 1] = _asr_split_chunk(
+                    start, end, split_count
+                )
+                try:
+                    chunk_path.unlink()
+                except OSError:
+                    pass
+                continue
+
             with chunk_path.open("rb") as audio_file:
                 response = client.post(
                     endpoint,
@@ -1609,23 +1666,48 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
                 )
             if response.is_error:
                 detail = response.text.strip()[-1200:]
-                raise RuntimeError(f"第 {index}/{len(chunks)} 段转写失败（HTTP {response.status_code}）：{detail}")
+                # 即使本地阈值以下，也以服务端的实际限制为准，遇到文件过大
+                # 的 400 响应继续细分一次，避免服务配置比预期更严格时直接失败。
+                if (
+                    response.status_code == 400
+                    and "Maximum file size exceeded" in detail
+                ):
+                    split_count = _asr_split_count_for_size(duration, file_size)
+                    if split_count >= 2:
+                        pending_chunks[chunk_position:chunk_position + 1] = _asr_split_chunk(
+                            start, end, split_count
+                        )
+                        try:
+                            chunk_path.unlink()
+                        except OSError:
+                            pass
+                        continue
+                raise RuntimeError(
+                    f"第 {completed_chunks + 1} 段转写失败（HTTP "
+                    f"{response.status_code}）：{detail}"
+                )
             try:
                 payload = response.json()
             except ValueError as exc:
-                raise RuntimeError(f"第 {index}/{len(chunks)} 段返回了非 JSON 内容") from exc
+                raise RuntimeError(f"第 {completed_chunks + 1} 段返回了非 JSON 内容") from exc
             if isinstance(payload, dict) and payload.get("error"):
-                raise RuntimeError(f"第 {index}/{len(chunks)} 段转写失败：{payload['error']}")
+                raise RuntimeError(f"第 {completed_chunks + 1} 段转写失败：{payload['error']}")
             text = _asr_extract_text(payload if isinstance(payload, dict) else {})
             if text:
                 texts.append(text)
+            completed_chunks += 1
+            chunk_position += 1
+            try:
+                chunk_path.unlink()
+            except OSError:
+                pass
 
     transcript = "\n\n".join(texts).strip()
     if not transcript:
         raise RuntimeError("服务未返回可用文字，请确认音频内容和 ASR 服务日志")
     return {
         "text": transcript,
-        "chunks": len(chunks),
+        "chunks": completed_chunks,
         "duration": round(total_duration, 1),
     }
 
