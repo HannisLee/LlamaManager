@@ -879,6 +879,7 @@ function isQwen3AsrProcess(proc) {
 
 let asrHistoryRecords = [];
 let asrExpandedRecordId = "";
+const asrHistoryTextCache = new Map();
 
 function formatAsrDate(timestamp) {
     if (!timestamp) return "-";
@@ -888,6 +889,22 @@ function formatAsrDate(timestamp) {
     });
 }
 
+function asrStatusLabel(status) {
+    return {
+        queued: "排队中",
+        transcribing: "转写中",
+        completed: "已完成",
+        error: "失败",
+    }[status] || "已完成";
+}
+
+function asrStatusClass(status) {
+    if (status === "completed") return "badge badge-running";
+    if (status === "error") return "badge badge-danger";
+    if (status === "transcribing") return "badge badge-warning";
+    return "badge badge-stopped";
+}
+
 function renderAsrPage() {
     document.querySelector(".container").style.display = "none";
     document.title = "Qwen3 ASR 音频转写";
@@ -895,31 +912,24 @@ function renderAsrPage() {
         <main class="asr-page">
             <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> Qwen3 ASR 音频转写</h1>
             <div class="card">
-                <h2>转写历史</h2>
-                <div id="asr-history-list" class="asr-history-list"><div class="custom-service-empty">正在读取历史记录...</div></div>
-                <div class="asr-hint">仅保存文字与基础信息；原始音频和临时切片不会保留。</div>
-            </div>
-            <div class="card">
                 <h2 id="asr-service-name">正在连接服务...</h2>
-                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus" style="display:none;">
+                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus" multiple style="display:none;">
                 <label for="asr-audio-file" id="asr-drop-zone" class="asr-drop-zone">
-                    <strong>拖放音频到这里，或点击选择文件</strong>
+                    <strong>拖放一个或多个音频到这里，或点击选择文件</strong>
                     <div class="asr-hint">支持 MP3、M4A、WAV、FLAC、OGG、OPUS、AAC、WEBM 等常见格式</div>
                 </label>
                 <div id="asr-file-name" class="asr-file-name" style="margin-top:8px;">尚未选择音频文件</div>
-                <div class="asr-hint">音频仅在本机临时处理，按静音自动切片，单片最长 10 分钟。</div>
+                <div class="asr-hint">可一次上传多个文件。音频仅在本机临时处理，转写任务会依次执行，单片最长 10 分钟。</div>
                 <div class="btn-group">
                     <button class="btn-success" id="asr-transcribe-btn" disabled>开始解析</button>
                     <button class="btn-secondary" onclick="window.close()">关闭页面</button>
                 </div>
                 <div id="asr-status" class="asr-hint"></div>
             </div>
-            <div id="asr-result-card" class="card hidden">
-                <h2>转写结果</h2>
-                <textarea id="asr-result" class="log-area asr-result-area" readonly placeholder="点击“开始解析”后，完整文字会显示在这里"></textarea>
-                <div class="btn-group">
-                    <button class="btn-secondary" id="asr-copy-btn">复制文字</button>
-                </div>
+            <div class="card">
+                <h2>转写历史</h2>
+                <div id="asr-history-list" class="asr-history-list"><div class="custom-service-empty">正在读取历史记录...</div></div>
+                <div class="asr-hint">最新上传的记录置顶。仅保存文字与基础信息；原始音频和临时切片不会保留。</div>
             </div>
         </main>
     `);
@@ -933,20 +943,25 @@ function renderAsrHistory() {
     }
     wrap.innerHTML = asrHistoryRecords.map(record => {
         const expanded = record.id === asrExpandedRecordId;
-        const meta = `${formatAsrDate(record.uploaded_at)} · ${record.original_filename || "未知文件"} · ${record.duration || 0} 秒`;
-        const content = expanded ? `
+        const status = record.status || "completed";
+        const durationText = record.duration === null || record.duration === undefined ? "时长待获取" : `${record.duration} 秒`;
+        const meta = `${formatAsrDate(record.uploaded_at)} · ${record.original_filename || "未知文件"} · ${durationText}`;
+        const cachedText = asrHistoryTextCache.get(record.id);
+        const content = expanded && status === "completed" ? `
             <div class="asr-history-content">
                 <div class="btn-group" style="align-items:center;">
                     <input id="asr-history-name-${record.id}" type="text" value="${escapeHtml(record.name || "")}" maxlength="160" aria-label="记录名称">
                     <button class="btn-secondary" onclick="saveAsrHistoryName('${record.id}')">保存名称</button>
+                    <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制文字</button>
                 </div>
-                <textarea id="asr-history-text-${record.id}" class="log-area" readonly>正在读取转写文字...</textarea>
+                <textarea id="asr-history-text-${record.id}" class="log-area" readonly>${escapeHtml(cachedText || "正在读取转写文字...")}</textarea>
             </div>` : "";
         return `
             <div class="asr-history-item">
                 <button class="asr-history-toggle" onclick="toggleAsrHistoryItem('${record.id}')" title="${escapeHtml(meta)}">
                     <span>${expanded ? "▾" : "▸"}</span>
                     <strong>${escapeHtml(record.name || "未命名转写")}</strong>
+                    <span class="${asrStatusClass(status)}">${asrStatusLabel(status)}</span>
                     <span class="asr-history-meta">${escapeHtml(formatAsrDate(record.uploaded_at))}</span>
                 </button>
                 ${content}
@@ -957,10 +972,13 @@ function renderAsrHistory() {
 async function loadAsrHistory() {
     const data = await api("GET", "/api/asr/history");
     asrHistoryRecords = Array.isArray(data.records) ? data.records : [];
+    if (!asrHistoryRecords.some(record => record.id === asrExpandedRecordId)) asrExpandedRecordId = "";
     renderAsrHistory();
 }
 
 async function toggleAsrHistoryItem(recordId) {
+    const record = asrHistoryRecords.find(item => item.id === recordId);
+    if (!record || (record.status || "completed") !== "completed") return;
     if (asrExpandedRecordId === recordId) {
         asrExpandedRecordId = "";
         renderAsrHistory();
@@ -969,8 +987,10 @@ async function toggleAsrHistoryItem(recordId) {
     asrExpandedRecordId = recordId;
     renderAsrHistory();
     const textArea = document.getElementById(`asr-history-text-${recordId}`);
+    if (asrHistoryTextCache.has(recordId)) return;
     try {
         const data = await api("GET", `/api/asr/history/${encodeURIComponent(recordId)}/text`);
+        asrHistoryTextCache.set(recordId, data.text || "");
         if (asrExpandedRecordId === recordId && textArea) textArea.value = data.text || "";
     } catch (e) {
         if (asrExpandedRecordId === recordId && textArea) textArea.value = `读取失败：${e.message}`;
@@ -993,6 +1013,20 @@ async function saveAsrHistoryName(recordId) {
     } catch (e) {}
 }
 
+async function copyAsrHistoryText(recordId) {
+    const text = asrHistoryTextCache.get(recordId);
+    if (!text) return;
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        const textArea = document.getElementById(`asr-history-text-${recordId}`);
+        if (textArea) {
+            textArea.select();
+            document.execCommand("copy");
+        }
+    }
+}
+
 async function initAsrPage(pid) {
     renderAsrPage();
     const fileInput = document.getElementById("asr-audio-file");
@@ -1000,9 +1034,7 @@ async function initAsrPage(pid) {
     const button = document.getElementById("asr-transcribe-btn");
     const fileName = document.getElementById("asr-file-name");
     const status = document.getElementById("asr-status");
-    const resultCard = document.getElementById("asr-result-card");
-    const resultArea = document.getElementById("asr-result");
-    let selectedFile = null;
+    let selectedFiles = [];
 
     try {
         const service = await api("GET", `/api/asr/${pid}`);
@@ -1015,20 +1047,26 @@ async function initAsrPage(pid) {
 
     try {
         await loadAsrHistory();
+        setInterval(() => loadAsrHistory().catch(() => {}), 3000);
     } catch (e) {
         document.getElementById("asr-history-list").innerHTML = '<div class="custom-service-empty">历史记录读取失败</div>';
     }
 
-    function selectAsrFile(file) {
-        if (!file) return;
-        selectedFile = file;
-        button.disabled = false;
-        fileName.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
-        status.textContent = "音频已选择，点击“开始解析”即可转写。";
+    function selectAsrFiles(files) {
+        selectedFiles = Array.from(files || []);
+        button.disabled = selectedFiles.length === 0;
+        if (!selectedFiles.length) {
+            fileName.textContent = "尚未选择音频文件";
+            return;
+        }
+        const names = selectedFiles.slice(0, 3).map(file => file.name).join("、");
+        const suffix = selectedFiles.length > 3 ? ` 等 ${selectedFiles.length} 个文件` : "";
+        fileName.textContent = `${names}${suffix} · 共 ${(selectedFiles.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024).toFixed(1)} MB`;
+        status.textContent = `已选择 ${selectedFiles.length} 个音频，点击“开始解析”即可加入转写队列。`;
     }
 
     fileInput.addEventListener("change", () => {
-        selectAsrFile(fileInput.files[0]);
+        selectAsrFiles(fileInput.files);
     });
 
     ["dragenter", "dragover"].forEach(eventName => {
@@ -1043,48 +1081,42 @@ async function initAsrPage(pid) {
             dropZone.classList.remove("drag-over");
         });
     });
-    dropZone.addEventListener("drop", event => selectAsrFile(event.dataTransfer.files[0]));
+    dropZone.addEventListener("drop", event => selectAsrFiles(event.dataTransfer.files));
 
     button.addEventListener("click", async () => {
-        const file = selectedFile;
-        if (!file) return;
+        const files = [...selectedFiles];
+        if (!files.length) return;
         button.disabled = true;
         fileInput.disabled = true;
-        resultCard.classList.remove("hidden");
-        resultArea.value = "";
-        status.textContent = "正在上传、切片并转写音频；长音频需要等待片段依次完成。";
+        status.textContent = `正在上传 ${files.length} 个音频；上传完成后会在下方历史中显示转写状态。`;
         try {
-            const response = await fetch(`/api/asr/${pid}/transcriptions`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": file.type || "application/octet-stream",
-                    "X-Audio-Filename": encodeURIComponent(file.name),
-                },
-                body: file,
-            });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.detail || data.error || "音频转写失败");
-            resultArea.value = data.text || "";
-            status.textContent = `解析完成：${data.chunks} 个片段，音频时长 ${data.duration} 秒。`;
+            const outcomes = await Promise.allSettled(files.map(async file => {
+                const response = await fetch(`/api/asr/${pid}/transcriptions`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": file.type || "application/octet-stream",
+                        "X-Audio-Filename": encodeURIComponent(file.name),
+                    },
+                    body: file,
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || data.error || `${file.name} 上传失败`);
+                return data;
+            }));
+            const accepted = outcomes.filter(result => result.status === "fulfilled").length;
             await loadAsrHistory();
+            status.textContent = `已接收 ${accepted}/${files.length} 个音频，转写状态会在下方历史列表自动更新。`;
+            const failed = outcomes.find(result => result.status === "rejected");
+            if (failed) showError(`部分音频上传失败：${failed.reason?.message || failed.reason}`);
+            selectedFiles = [];
+            fileInput.value = "";
+            fileName.textContent = "尚未选择音频文件";
         } catch (e) {
-            status.textContent = `解析失败：${e.message}`;
-            showError(`音频转写失败：${e.message}`);
+            status.textContent = `上传失败：${e.message}`;
+            showError(`音频上传失败：${e.message}`);
         } finally {
-            button.disabled = false;
+            button.disabled = selectedFiles.length === 0;
             fileInput.disabled = false;
-        }
-    });
-
-    document.getElementById("asr-copy-btn").addEventListener("click", async () => {
-        if (!resultArea.value) return;
-        try {
-            await navigator.clipboard.writeText(resultArea.value);
-            status.textContent = "转写文字已复制。";
-        } catch (e) {
-            resultArea.select();
-            document.execCommand("copy");
-            status.textContent = "转写文字已复制。";
         }
     });
 }

@@ -123,7 +123,7 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/api/asr/history/{record_id}/text` | 读取指定本地 ASR 历史的全文 |
 | PATCH | `/api/asr/history/{record_id}` | 修改指定 ASR 历史记录的自定义名称 |
 | GET | `/api/asr/{pid}` | 获取指定 Qwen3-ASR-1.7B 实例的转写页信息 |
-| POST | `/api/asr/{pid}/transcriptions` | 上传一个音频，临时切片后调用指定 Qwen3-ASR-1.7B 返回完整转写文本 |
+| POST | `/api/asr/{pid}/transcriptions` | 上传一个音频，创建历史 item 并在后台队列中转写，立即返回 `202` |
 | POST | `/api/start` | 启动已注册服务（model 为 `custom:<id>` 启 vLLM，或 `llama:<id>` 启 llama.cpp） |
 | POST | `/api/stop` | 停止指定 PID 或全部受管实例 |
 | POST | `/api/restart` | 重启指定 PID 或最新受管实例 |
@@ -223,11 +223,12 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 
 **Qwen3-ASR-1.7B 专用转写：**
 1. 前端识别运行中的 vLLM 服务名、模型或命令中含 `Qwen3-ASR-1.7B` 的实例，将该实例的 Open 跳转到 `/asr/{pid}`；其他服务仍打开原反向代理页
-2. 专用页提供点击选择和拖放上传区域；选择音频后显示结果文本框，点击「开始解析」以原始请求体上传到 `/api/asr/{pid}/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
+2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，并行上传到 `/api/asr/{pid}/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
 3. 后端只接受仍在运行的 Qwen3-ASR-1.7B vLLM 受管实例，将音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；单片最长 600 秒
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记
-5. 所有临时音频和 FLAC 切片在请求结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，该目录不纳入 Git
-6. 专用页以可展开 item 展示历史，列表保存自定义名称、原始文件名、上传时间、时长和片段数；展开后按需读取全文，并可修改记录名称
+5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
+6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
+7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数和状态；只有点击「已完成」条目时才按需读取全文，并可修改记录名称
 
 **下载模型：**
 1. 校验仓库名（`owner/repo`）；指定文件名时校验 `.gguf` 结尾，留空则全量下载
@@ -277,7 +278,7 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
 6. **设置区** — llama-server 路径、模型目录、默认端口、GPU 历史小时数、Save/检测 llama.cpp/扫描 按钮
 
-Qwen3-ASR-1.7B 服务的 Open 会复用同一个 `index.html`，但通过 `/asr/{pid}` 路径动态呈现独立转写页，不加载管理后台的轮询逻辑。该页包含拖放/点击音频上传、开始解析按钮、可展开的历史记录、名称修改、完整转写文本框和复制按钮。
+Qwen3-ASR-1.7B 服务的 Open 会复用同一个 `index.html`，但通过 `/asr/{pid}` 路径动态呈现独立转写页，不加载管理后台的轮询逻辑。该页顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。
 
 GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
 - `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`
@@ -324,7 +325,7 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 | `stopManagedProcess(pid)` | 停止指定受管实例 |
 | `restartManagedProcess(pid)` | 重启指定受管实例 |
 | `openManagedWebUI(pid)` | Qwen3-ASR-1.7B 打开专用转写页，其他服务打开原代理页 |
-| `initAsrPage(pid)` | 初始化音频选择、上传、转写结果与复制操作 |
+| `initAsrPage(pid)` | 初始化批量拖放上传、后台任务状态和历史自动刷新 |
 | `loadAsrHistory()` | 加载本地转写历史摘要并渲染可展开列表 |
 | `toggleAsrHistoryItem(id)` | 展开或收起一条历史记录，展开时按需读取全文 |
 | `saveAsrHistoryName(id)` | 保存历史记录的自定义名称 |

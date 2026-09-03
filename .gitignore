@@ -4,6 +4,7 @@ __pycache__/
 logs/*.log
 logs/
 data/asr_history/
+data/asr_jobs/
 .claude/
 nohup.out
 *.bak

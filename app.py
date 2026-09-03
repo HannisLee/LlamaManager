@@ -76,6 +76,10 @@ ASR_ALLOWED_AUDIO_SUFFIXES = {
 ASR_HISTORY_DIR = APP_DIR / "data" / "asr_history"
 ASR_HISTORY_INDEX_PATH = ASR_HISTORY_DIR / "records.json"
 _asr_history_lock = threading.RLock()
+ASR_JOB_DIR = APP_DIR / "data" / "asr_jobs"
+ASR_MAX_CONCURRENT_TASKS = 1
+_asr_task_semaphore = threading.Semaphore(ASR_MAX_CONCURRENT_TASKS)
+_asr_background_tasks: set[asyncio.Task] = set()
 
 app = FastAPI(title="LlamaManager")
 
@@ -1662,6 +1666,8 @@ def _asr_history_snapshot(record: dict) -> dict:
         "duration": record.get("duration"),
         "chunks": record.get("chunks"),
         "text_length": record.get("text_length", 0),
+        "status": record.get("status") or "completed",
+        "error": record.get("error"),
     }
 
 
@@ -1673,8 +1679,8 @@ def _asr_history_snapshots() -> list[dict]:
     return [_asr_history_snapshot(record) for record in records]
 
 
-def _save_asr_history_record(filename: str, result: dict) -> dict:
-    """保存转写全文和元数据；原始音频不进入历史目录。"""
+def _create_asr_history_record(filename: str) -> dict:
+    """创建一个排队中的 ASR 历史记录；原始音频不进入历史目录。"""
     record_id = f"asr_{uuid.uuid4().hex}"
     now = time.time()
     name = Path(filename).stem.strip() or "未命名转写"
@@ -1684,11 +1690,39 @@ def _save_asr_history_record(filename: str, result: dict) -> dict:
         "name": name[:160],
         "original_filename": filename,
         "uploaded_at": now,
-        "duration": result["duration"],
-        "chunks": result["chunks"],
-        "text_length": len(result["text"]),
+        "duration": None,
+        "chunks": None,
+        "text_length": 0,
         "transcript_file": transcript_name,
+        "status": "queued",
+        "error": None,
     }
+    with _asr_history_lock:
+        ASR_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        records = _load_asr_history()
+        records.append(record)
+        _write_asr_history(records)
+    return _asr_history_snapshot(record)
+
+
+def _update_asr_history_record(record_id: str, changes: dict) -> dict:
+    """更新一条 ASR 历史记录并返回摘要。"""
+    with _asr_history_lock:
+        records = _load_asr_history()
+        for record in records:
+            if record.get("id") == record_id:
+                record.update(changes)
+                _write_asr_history(records)
+                return _asr_history_snapshot(record)
+    raise HTTPException(status_code=404, detail="转写历史不存在")
+
+
+def _complete_asr_history_record(record_id: str, result: dict) -> dict:
+    """保存完成后的全文并将历史记录改为已完成。"""
+    record = _find_asr_history_record(record_id)
+    transcript_name = Path(str(record.get("transcript_file") or "")).name
+    if not transcript_name:
+        raise RuntimeError("历史记录缺少转写文本路径")
     with _asr_history_lock:
         ASR_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         transcript_path = ASR_HISTORY_DIR / transcript_name
@@ -1697,16 +1731,38 @@ def _save_asr_history_record(filename: str, result: dict) -> dict:
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 output.write(result["text"])
             os.replace(temp_path, transcript_path)
-            records = _load_asr_history()
-            records.append(record)
-            _write_asr_history(records)
         except Exception:
             try:
                 os.unlink(temp_path)
             except OSError:
                 pass
             raise
-    return _asr_history_snapshot(record)
+    return _update_asr_history_record(record_id, {
+        "duration": result["duration"],
+        "chunks": result["chunks"],
+        "text_length": len(result["text"]),
+        "status": "completed",
+        "error": None,
+    })
+
+
+def _run_asr_history_task(record_id: str, item: dict, input_path: Path, work_dir: Path):
+    """按队列执行一个转写任务，并将结果写回本地历史。"""
+    with _asr_task_semaphore:
+        try:
+            _update_asr_history_record(record_id, {"status": "transcribing", "error": None})
+            result = _transcribe_qwen3_asr(item, input_path, work_dir)
+            _complete_asr_history_record(record_id, result)
+        except Exception as exc:
+            try:
+                _update_asr_history_record(record_id, {
+                    "status": "error",
+                    "error": str(exc)[:1500],
+                })
+            except Exception:
+                pass
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _find_asr_history_record(record_id: str) -> dict:
@@ -1792,7 +1848,7 @@ async def get_qwen3_asr_info(pid: int):
 
 @app.post("/api/asr/{pid}/transcriptions")
 async def transcribe_with_qwen3_asr(pid: int, request: Request):
-    """接收一个音频文件，临时切片后调用指定 Qwen3-ASR-1.7B 实例转写。"""
+    """接收一个音频文件，创建历史记录并在后台排队转写。"""
     item = _get_qwen3_asr_item(pid)
     filename = unquote(request.headers.get("x-audio-filename", "audio"))
     filename = Path(filename).name
@@ -1807,27 +1863,37 @@ async def transcribe_with_qwen3_asr(pid: int, request: Request):
     if content_length > ASR_MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
 
-    with tempfile.TemporaryDirectory(prefix="llama-asr-") as temp_dir:
-        work_dir = Path(temp_dir)
+    try:
+        history_record = _create_asr_history_record(filename)
+        work_dir = ASR_JOB_DIR / history_record["id"]
+        work_dir.mkdir(parents=True, exist_ok=True)
         input_path = work_dir / f"audio{suffix}"
         received = 0
-        try:
-            with input_path.open("wb") as output:
-                async for chunk in request.stream():
-                    received += len(chunk)
-                    if received > ASR_MAX_UPLOAD_BYTES:
-                        raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
-                    output.write(chunk)
-            if received == 0:
-                raise HTTPException(status_code=400, detail="请选择要上传的音频文件")
-            result = await asyncio.to_thread(_transcribe_qwen3_asr, item, input_path, work_dir)
-            history_record = _save_asr_history_record(filename, result)
-        except HTTPException:
-            raise
-        except (OSError, RuntimeError, httpx.HTTPError) as exc:
-            raise HTTPException(status_code=502, detail=f"音频转写失败：{str(exc)[:1500]}") from exc
+        with input_path.open("wb") as output:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > ASR_MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
+                output.write(chunk)
+        if received == 0:
+            raise HTTPException(status_code=400, detail="请选择要上传的音频文件")
+    except HTTPException:
+        if "history_record" in locals():
+            _update_asr_history_record(history_record["id"], {"status": "error", "error": "上传未完成"})
+        if "work_dir" in locals():
+            shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    except OSError as exc:
+        if "history_record" in locals():
+            _update_asr_history_record(history_record["id"], {"status": "error", "error": "上传保存失败"})
+        if "work_dir" in locals():
+            shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"保存上传音频失败：{str(exc)[:500]}") from exc
 
-    return JSONResponse({"ok": True, **result, "record": history_record})
+    task = asyncio.create_task(asyncio.to_thread(_run_asr_history_task, history_record["id"], item, input_path, work_dir))
+    _asr_background_tasks.add(task)
+    task.add_done_callback(_asr_background_tasks.discard)
+    return JSONResponse({"ok": True, "record": history_record}, status_code=202)
 
 
 @app.get("/api/settings")
