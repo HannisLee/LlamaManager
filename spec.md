@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-LlamaManager 是一个极简的 llama.cpp Web 管理工具，通过单页面 WebUI 管理本机 llama-server 进程的启动、停止、重启，支持从 Hugging Face 下载 GGUF 模型，并提供多 GPU 监控与 GPU 进程列表展示。
+LlamaManager 是一个本地多模型服务管理工具，通过单页面 WebUI 管理任意本机启动命令的运行、停止与重启，支持从 Hugging Face 下载模型，并提供多 GPU 监控与 GPU 进程列表展示。
 
 ## 技术栈
 
@@ -78,12 +78,9 @@ _download_lock   # 下载任务状态读写锁
 | `_save_settings(data)` | 原子写入 settings.json（先写临时文件再 rename） |
 | `_save_settings_state(key, value)` | 保存 settings.json 中的内部状态字段 |
 | `_migrate_legacy_state_files()` | 将旧版分散 JSON 状态迁移到 settings.json 并删除旧文件 |
-| `_detect_llama_cpp_environment()` | 检测环境变量和 PATH 中可用的 llama-server |
-| `_validate_extra_args(extra)` | 校验 extra_args，禁止 shell 注入字符 |
-| `_load_model_params()` | （已废弃）从 settings.json 读取旧版按模型记忆的参数 |
-| `_save_model_param(model, port, extra_args)` | 保存单个模型的启动参数到 settings.json |
-| `_load_custom_services()` | 从 settings.json 读取服务注册表（llama.cpp / vLLM） |
-| `_normalize_custom_service(data)` | 校验并标准化服务注册数据（按 service_type 分 llama/vllm 两支） |
+| `_command_tokens(command)` | 校验命令引号并提取 token，用于识别模型名和可选端口 |
+| `_load_custom_services()` | 从 settings.json 读取并迁移通用命令服务注册表 |
+| `_normalize_custom_service(data)` | 校验并标准化服务名、完整启动命令和 CUDA GPU 选择 |
 | `_load_managed_process_records_file()` | 从 settings.json 读取受管进程记录 |
 | `_save_managed_process_records_file()` | 保存受管进程记录到 settings.json |
 | `_restore_managed_process_records()` | 后端重启后按 PID 和进程创建时间恢复仍存活的受管进程 |
@@ -96,10 +93,7 @@ _download_lock   # 下载任务状态读写锁
 | `_managed_process_pid_map(managed)` | 将受管父进程及其子进程 PID 映射到受管根 PID |
 | `_make_download_tqdm(task_id)` | 创建绑定指定下载任务的 tqdm 类，按任务写入字节进度 |
 | `_download_task_snapshot(task)` | 生成下载任务 API 快照 |
-| `_build_command(settings, overrides)` | 拼接 llama-server 启动命令 |
-| `_build_custom_command(service)` | 按注册命令原样构建自定义服务启动命令 |
-| `_kill_port_occupant(port, protected)` | 杀掉占用端口的进程（跳过受保护端口和 PID 1） |
-| `_stop_process_internal(pid, clear_log)` | 停止指定或全部受管 llama-server 进程 |
+| `_stop_process_internal(pid, clear_log)` | 停止指定或全部受管命令服务进程 |
 
 ### API 端点
 
@@ -109,11 +103,10 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/icon.png` | 返回网站图标 |
 | GET | `/api/settings` | 读取配置 |
 | POST | `/api/settings` | 保存配置 |
-| GET | `/api/detect-llama-cpp` | 检测环境变量或 PATH 中是否存在 llama.cpp 的 llama-server |
 | GET | `/api/models` | 递归扫描 model_dir 下 .gguf 文件 |
 | GET | `/api/model-repositories` | 扫描 model_dir 下全量下载的仓库目录 |
-| GET | `/api/custom-services` | 读取已注册服务列表（llama.cpp / vLLM 两类） |
-| POST | `/api/custom-services` | 注册或更新服务（按 service_type=llama/vllm 分支校验） |
+| GET | `/api/custom-services` | 读取已注册的通用命令服务列表 |
+| POST | `/api/custom-services` | 注册或更新服务（服务名、完整启动命令、CUDA GPU 选择） |
 | DELETE | `/api/custom-services/{service_id}` | 删除已注册服务 |
 | GET | `/api/status` | 当前 llama-server 进程状态 |
 | GET | `/api/gpus` | 当前 GPU 状态、每卡 util 历史和受管进程列表 |
@@ -190,26 +183,21 @@ _download_lock   # 下载任务状态读写锁
 
 **统一服务管理（注册 + 启动）：**
 
-llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册后启动。所有服务配置保存在 `settings.json.custom_services`，按 `service_type` 区分（`llama` / `vllm`）。
+所有本地模型服务统一在「服务管理」卡片中，先注册后启动。每个服务保存完整终端启动命令及可选的 `CUDA_VISIBLE_DEVICES`，配置保存在 `settings.json.custom_services`。
 
 **注册服务：**
-1. 注册表单按类型切换字段：llama.cpp 填模型/端口/extra_args/GPU；vLLM 填仓库模型/服务名/启动命令
-2. POST `/api/custom-services` 经 `_normalize_custom_service` 按 `service_type` 分支校验：
-   - llama：model 必填、port 合法、extra_args 经 `_validate_extra_args` 校验；记录存 model/port/extra_args/gpu_indexes，command=null
-   - vllm：command 必含 `--port`、port 从命令解析、name 缺失时从 `--model` 推断；记录存 command/port，其余字段为 null
+1. 注册表单只包含服务名、完整启动命令和 CUDA GPU 选择；服务名留空时从 `--model` 等参数推断
+2. POST `/api/custom-services` 校验命令引号，保存原始命令与 GPU 索引；若命令含合法 `--port`，仅被动记录该端口以支持 Open 与 Qwen ASR 页面，不作为必填项
 3. 注册项 upsert 到 `custom_services`，编辑时复用原 service_id 覆盖
-4. 「已注册服务」列表展示两类注册项，可编辑/删除
+4. 旧 llama.cpp / vLLM 注册项会迁移为完整命令，保留原有服务与 GPU 配置
 
 **启动已注册服务：**
-1. POST `/api/start`，`model` 字段为 `custom:<id>`（启 vLLM）或 `llama:<id>`（启 llama.cpp）；无前缀则 400 拒绝（不再支持一次性直接启动）
-2. 后端按前缀分流，均从 `custom_services` 取配置并校验 service_type 匹配
-3. 公共：读取 `incremental_start`（false 停全部受管实例，true 追加）、`auto_kill_port`（占用时自动 kill）；增量启动时禁止复用已受管端口
-4. llama.cpp：用注册项的 model/port/extra_args/gpu_indexes，经 `_build_command` 拼成 `llama-server -m <model> --host --port <extra_args>`；校验 llama-server 与模型文件存在；`CUDA_VISIBLE_DEVICES` 由注册项 gpu_indexes 注入
-5. vLLM：`shlex.split` 原样解析注册命令，不使用 shell；端口取自注册项
-6. subprocess.Popen 启动，stdout/stderr 重定向到 `logs/services/<type>-<name>-<port>-<timestamp>.log`
-7. 写入 `_managed_processes[pid]` 和 `settings.json.managed_processes`，含 `service_kind`/`service_type`/`service_id`（两类均写入 service_id），记录 `process_create_time` 用于重启后校验 PID 身份
-8. 「已注册服务」列表按 service_id 匹配受管进程：未运行显示「启动」，运行中显示 PID 并提供 停止/重启/打开，另可编辑/删除
-9. 自定义服务命令以 `conda` 开头时，后端优先从 PATH、`CONDA_EXE` 与用户目录下常见 Conda 安装位置解析可执行文件，避免服务进程 PATH 不完整时启动失败
+1. POST `/api/start` 只接收 `service_id`，从注册表读取完整命令和 GPU 选择
+2. 后端以 `nohup bash -lc <命令>` 创建独立会话；`stdout/stderr` 全部重定向到 `logs/services/command-<name>-<port或process>-<timestamp>.log`
+3. 勾选 GPU 时，进程环境注入 `CUDA_VISIBLE_DEVICES=<索引列表>`；未勾选则沿用系统可见 GPU
+4. 不再自动清理占用端口、不再有增量启动开关，也不要求命令包含端口；端口冲突由服务自身写入日志报告
+5. 写入 `_managed_processes[pid]` 和 `settings.json.managed_processes`，记录 `service_id` 与 `process_create_time`，支持后台重启后恢复管理
+6. 「已注册服务」列表按 service_id 匹配受管进程：未运行显示「启动」，运行中提供停止/重启；只有命令识别到端口时才显示 Open
 
 **后台重启后的受管进程恢复：**
 - 每次启动、停止、状态同步时，后端将受管进程元数据写入 `settings.json.managed_processes`
@@ -273,11 +261,11 @@ llama.cpp 和 vLLM 两类服务统一在「服务管理」卡片中，先注册�
 单页面，暗色主题，max-width 1200px 居中。六个卡片区块纵向排列：
 
 1. **GPU 监控区** — 每张 GPU 的 util 波形图、多 GPU 卡片、受管进程表
-2. **服务管理区** — 顶部「已注册服务」列表（按运行状态显示 启动 或 停止/重启/打开，另可编辑/删除）、auto_kill 与增量启动全局开关、下方类型切换（llama.cpp / vLLM）的注册表单
-3. **服务日志** — 进程日志下拉、Refresh 按钮、readonly textarea
+2. **服务管理区** — 顶部「已注册服务」列表（按运行状态显示 启动 或 停止/重启/可选 Open，另可编辑/删除）、下方为服务名、CUDA GPU 选择和完整启动命令的注册表单
+3. **服务日志** — 下拉框仅展示当前仍在运行的受管任务，readonly textarea 显示对应实时日志尾部
 4. **下载区** — HF 仓库ID、文件名（留空则全量下载整个仓库）、Download 按钮、强制重新下载复选框；可连续新增多个下载任务
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
-6. **设置区** — llama-server 路径、模型目录、默认端口、GPU 历史小时数、Save/检测 llama.cpp/扫描 按钮
+6. **设置区** — 模型下载目录、GPU 历史小时数与 Save 按钮
 
 Qwen3-ASR-1.7B 服务的 Open 会复用同一个 `index.html`，但通过 `/asr/{pid}` 路径动态呈现独立转写页，不加载管理后台的轮询逻辑。该页顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
 
@@ -347,17 +335,10 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `llama_server_path` | string | `/home/linuxbrew/.linuxbrew/bin/llama-server` | llama-server 二进制路径 |
 | `model_dir` | string | `~/models` | GGUF 模型目录（递归扫描） |
-| `host` | string | `0.0.0.0` | llama-server 绑定地址 |
-| `port` | int | `8083` | llama-server 端口 |
-| `extra_args` | string | `""` | 额外启动参数 |
-| `log_file` | string | `./logs/llama-server.log` | 日志文件路径 |
-| `auto_kill_port` | bool | `true` | 端口占用时自动 kill |
-| `protected_ports` | array | `[22]` | 受保护端口 |
 | `gpu_history_hours` | number | `2` | GPU util 波形显示的历史小时数 |
 | `model_params` | object | `{}` | （已废弃）按模型路径保存的启动参数，启动时迁移为 llama 注册项后清空 |
-| `custom_services` | object | `{}` | 用户注册的 llama.cpp / vLLM 服务 |
+| `custom_services` | object | `{}` | 用户注册的通用命令服务 |
 | `managed_processes` | object | `{"processes":[]}` | LlamaManager 启动过的受管进程记录 |
 | `gpu_history` | object | `{"samples":[]}` | GPU util 历史采样 |
 
