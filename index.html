@@ -327,6 +327,62 @@
             font-size: 0.88em;
             margin-top: 6px;
         }
+        .asr-drop-zone {
+            display: block;
+            border: 2px dashed #48698f;
+            border-radius: 8px;
+            padding: 26px 18px;
+            text-align: center;
+            cursor: pointer;
+            color: #b7c7df;
+            background: #101b32;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .asr-drop-zone:hover,
+        .asr-drop-zone.drag-over {
+            border-color: #4e9cff;
+            background: #162b4b;
+        }
+        .asr-history-list {
+            display: grid;
+            gap: 8px;
+        }
+        .asr-history-item {
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #101b32;
+        }
+        .asr-history-toggle {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            color: #e7eef8;
+            background: transparent;
+            text-align: left;
+        }
+        .asr-history-toggle strong {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .asr-history-meta {
+            margin-left: auto;
+            color: #8fa1bd;
+            font-size: 0.82em;
+            white-space: nowrap;
+        }
+        .asr-history-content {
+            padding: 0 12px 12px;
+            border-top: 1px solid #2f3b52;
+        }
+        .asr-history-content textarea {
+            min-height: 180px;
+            height: 260px;
+            margin-top: 10px;
+        }
 
         /* checkbox */
         .checkbox-row {
@@ -821,6 +877,17 @@ function isQwen3AsrProcess(proc) {
         && identity.includes("qwen3-asr-1.7b");
 }
 
+let asrHistoryRecords = [];
+let asrExpandedRecordId = "";
+
+function formatAsrDate(timestamp) {
+    if (!timestamp) return "-";
+    return new Date(Number(timestamp) * 1000).toLocaleString("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+}
+
 function renderAsrPage() {
     document.querySelector(".container").style.display = "none";
     document.title = "Qwen3 ASR 音频转写";
@@ -828,9 +895,18 @@ function renderAsrPage() {
         <main class="asr-page">
             <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> Qwen3 ASR 音频转写</h1>
             <div class="card">
+                <h2>转写历史</h2>
+                <div id="asr-history-list" class="asr-history-list"><div class="custom-service-empty">正在读取历史记录...</div></div>
+                <div class="asr-hint">仅保存文字与基础信息；原始音频和临时切片不会保留。</div>
+            </div>
+            <div class="card">
                 <h2 id="asr-service-name">正在连接服务...</h2>
-                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus">
-                <div id="asr-file-name" class="asr-file-name" style="margin-top:8px;">请选择一个音频文件</div>
+                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus" style="display:none;">
+                <label for="asr-audio-file" id="asr-drop-zone" class="asr-drop-zone">
+                    <strong>拖放音频到这里，或点击选择文件</strong>
+                    <div class="asr-hint">支持 MP3、M4A、WAV、FLAC、OGG、OPUS、AAC、WEBM 等常见格式</div>
+                </label>
+                <div id="asr-file-name" class="asr-file-name" style="margin-top:8px;">尚未选择音频文件</div>
                 <div class="asr-hint">音频仅在本机临时处理，按静音自动切片，单片最长 10 分钟。</div>
                 <div class="btn-group">
                     <button class="btn-success" id="asr-transcribe-btn" disabled>开始解析</button>
@@ -849,14 +925,84 @@ function renderAsrPage() {
     `);
 }
 
+function renderAsrHistory() {
+    const wrap = document.getElementById("asr-history-list");
+    if (!asrHistoryRecords.length) {
+        wrap.innerHTML = '<div class="custom-service-empty">暂无转写历史</div>';
+        return;
+    }
+    wrap.innerHTML = asrHistoryRecords.map(record => {
+        const expanded = record.id === asrExpandedRecordId;
+        const meta = `${formatAsrDate(record.uploaded_at)} · ${record.original_filename || "未知文件"} · ${record.duration || 0} 秒`;
+        const content = expanded ? `
+            <div class="asr-history-content">
+                <div class="btn-group" style="align-items:center;">
+                    <input id="asr-history-name-${record.id}" type="text" value="${escapeHtml(record.name || "")}" maxlength="160" aria-label="记录名称">
+                    <button class="btn-secondary" onclick="saveAsrHistoryName('${record.id}')">保存名称</button>
+                </div>
+                <textarea id="asr-history-text-${record.id}" class="log-area" readonly>正在读取转写文字...</textarea>
+            </div>` : "";
+        return `
+            <div class="asr-history-item">
+                <button class="asr-history-toggle" onclick="toggleAsrHistoryItem('${record.id}')" title="${escapeHtml(meta)}">
+                    <span>${expanded ? "▾" : "▸"}</span>
+                    <strong>${escapeHtml(record.name || "未命名转写")}</strong>
+                    <span class="asr-history-meta">${escapeHtml(formatAsrDate(record.uploaded_at))}</span>
+                </button>
+                ${content}
+            </div>`;
+    }).join("");
+}
+
+async function loadAsrHistory() {
+    const data = await api("GET", "/api/asr/history");
+    asrHistoryRecords = Array.isArray(data.records) ? data.records : [];
+    renderAsrHistory();
+}
+
+async function toggleAsrHistoryItem(recordId) {
+    if (asrExpandedRecordId === recordId) {
+        asrExpandedRecordId = "";
+        renderAsrHistory();
+        return;
+    }
+    asrExpandedRecordId = recordId;
+    renderAsrHistory();
+    const textArea = document.getElementById(`asr-history-text-${recordId}`);
+    try {
+        const data = await api("GET", `/api/asr/history/${encodeURIComponent(recordId)}/text`);
+        if (asrExpandedRecordId === recordId && textArea) textArea.value = data.text || "";
+    } catch (e) {
+        if (asrExpandedRecordId === recordId && textArea) textArea.value = `读取失败：${e.message}`;
+    }
+}
+
+async function saveAsrHistoryName(recordId) {
+    const input = document.getElementById(`asr-history-name-${recordId}`);
+    const name = input ? input.value.trim() : "";
+    if (!name) {
+        showError("记录名称不能为空");
+        return;
+    }
+    try {
+        await api("PATCH", `/api/asr/history/${encodeURIComponent(recordId)}`, { name });
+        const record = asrHistoryRecords.find(item => item.id === recordId);
+        if (record) record.name = name;
+        asrExpandedRecordId = "";
+        await toggleAsrHistoryItem(recordId);
+    } catch (e) {}
+}
+
 async function initAsrPage(pid) {
     renderAsrPage();
     const fileInput = document.getElementById("asr-audio-file");
+    const dropZone = document.getElementById("asr-drop-zone");
     const button = document.getElementById("asr-transcribe-btn");
     const fileName = document.getElementById("asr-file-name");
     const status = document.getElementById("asr-status");
     const resultCard = document.getElementById("asr-result-card");
     const resultArea = document.getElementById("asr-result");
+    let selectedFile = null;
 
     try {
         const service = await api("GET", `/api/asr/${pid}`);
@@ -867,15 +1013,40 @@ async function initAsrPage(pid) {
         return;
     }
 
+    try {
+        await loadAsrHistory();
+    } catch (e) {
+        document.getElementById("asr-history-list").innerHTML = '<div class="custom-service-empty">历史记录读取失败</div>';
+    }
+
+    function selectAsrFile(file) {
+        if (!file) return;
+        selectedFile = file;
+        button.disabled = false;
+        fileName.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+        status.textContent = "音频已选择，点击“开始解析”即可转写。";
+    }
+
     fileInput.addEventListener("change", () => {
-        const file = fileInput.files[0];
-        button.disabled = !file;
-        fileName.textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : "请选择一个音频文件";
-        if (file) status.textContent = "音频已选择，点击“开始解析”即可转写。";
+        selectAsrFile(fileInput.files[0]);
     });
 
+    ["dragenter", "dragover"].forEach(eventName => {
+        dropZone.addEventListener(eventName, event => {
+            event.preventDefault();
+            dropZone.classList.add("drag-over");
+        });
+    });
+    ["dragleave", "drop"].forEach(eventName => {
+        dropZone.addEventListener(eventName, event => {
+            event.preventDefault();
+            dropZone.classList.remove("drag-over");
+        });
+    });
+    dropZone.addEventListener("drop", event => selectAsrFile(event.dataTransfer.files[0]));
+
     button.addEventListener("click", async () => {
-        const file = fileInput.files[0];
+        const file = selectedFile;
         if (!file) return;
         button.disabled = true;
         fileInput.disabled = true;
@@ -895,6 +1066,7 @@ async function initAsrPage(pid) {
             if (!response.ok) throw new Error(data.detail || data.error || "音频转写失败");
             resultArea.value = data.text || "";
             status.textContent = `解析完成：${data.chunks} 个片段，音频时长 ${data.duration} 秒。`;
+            await loadAsrHistory();
         } catch (e) {
             status.textContent = `解析失败：${e.message}`;
             showError(`音频转写失败：${e.message}`);

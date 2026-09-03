@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 logs/*.log
 logs/
+data/asr_history/
 .claude/
 nohup.out
 *.bak

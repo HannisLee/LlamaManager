@@ -73,6 +73,9 @@ ASR_MAX_CHUNK_SECONDS = 600
 ASR_ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
 }
+ASR_HISTORY_DIR = APP_DIR / "data" / "asr_history"
+ASR_HISTORY_INDEX_PATH = ASR_HISTORY_DIR / "records.json"
+_asr_history_lock = threading.RLock()
 
 app = FastAPI(title="LlamaManager")
 
@@ -1623,6 +1626,98 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
     }
 
 
+def _load_asr_history() -> list[dict]:
+    """读取本地 ASR 历史索引，损坏或不存在时返回空列表。"""
+    try:
+        data = json.loads(ASR_HISTORY_INDEX_PATH.read_text(encoding="utf-8"))
+        records = data.get("records", []) if isinstance(data, dict) else []
+        return [item for item in records if isinstance(item, dict)]
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_asr_history(records: list[dict]):
+    """原子写入 ASR 历史索引。"""
+    ASR_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=str(ASR_HISTORY_DIR), suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump({"records": records}, output, ensure_ascii=False, indent=2)
+        os.replace(temp_path, ASR_HISTORY_INDEX_PATH)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _asr_history_snapshot(record: dict) -> dict:
+    """生成不含全文的历史记录摘要。"""
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "original_filename": record.get("original_filename"),
+        "uploaded_at": record.get("uploaded_at"),
+        "duration": record.get("duration"),
+        "chunks": record.get("chunks"),
+        "text_length": record.get("text_length", 0),
+    }
+
+
+def _asr_history_snapshots() -> list[dict]:
+    """按上传时间倒序返回历史记录摘要。"""
+    with _asr_history_lock:
+        records = _load_asr_history()
+    records.sort(key=lambda item: item.get("uploaded_at") or 0, reverse=True)
+    return [_asr_history_snapshot(record) for record in records]
+
+
+def _save_asr_history_record(filename: str, result: dict) -> dict:
+    """保存转写全文和元数据；原始音频不进入历史目录。"""
+    record_id = f"asr_{uuid.uuid4().hex}"
+    now = time.time()
+    name = Path(filename).stem.strip() or "未命名转写"
+    transcript_name = f"{record_id}.txt"
+    record = {
+        "id": record_id,
+        "name": name[:160],
+        "original_filename": filename,
+        "uploaded_at": now,
+        "duration": result["duration"],
+        "chunks": result["chunks"],
+        "text_length": len(result["text"]),
+        "transcript_file": transcript_name,
+    }
+    with _asr_history_lock:
+        ASR_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        transcript_path = ASR_HISTORY_DIR / transcript_name
+        fd, temp_path = tempfile.mkstemp(dir=str(ASR_HISTORY_DIR), suffix=".txt.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                output.write(result["text"])
+            os.replace(temp_path, transcript_path)
+            records = _load_asr_history()
+            records.append(record)
+            _write_asr_history(records)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+    return _asr_history_snapshot(record)
+
+
+def _find_asr_history_record(record_id: str) -> dict:
+    """按 ID 获取一条历史记录。"""
+    with _asr_history_lock:
+        for record in _load_asr_history():
+            if record.get("id") == record_id:
+                return record
+    raise HTTPException(status_code=404, detail="转写历史不存在")
+
+
 # ── API 端点 ──────────────────────────────────────────────
 
 @app.get("/")
@@ -1642,6 +1737,45 @@ async def qwen3_asr_page(pid: int):
     """返回指定 Qwen3-ASR-1.7B 实例的专用转写页。"""
     _get_qwen3_asr_item(pid)
     return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/api/asr/history")
+async def get_asr_history():
+    """获取本地保存的 ASR 转写历史摘要。"""
+    return JSONResponse({"records": _asr_history_snapshots()})
+
+
+@app.get("/api/asr/history/{record_id}/text")
+async def get_asr_history_text(record_id: str):
+    """读取一条本地 ASR 转写历史的全文。"""
+    record = _find_asr_history_record(record_id)
+    transcript_name = Path(str(record.get("transcript_file") or "")).name
+    if not transcript_name:
+        raise HTTPException(status_code=404, detail="转写文本不存在")
+    transcript_path = ASR_HISTORY_DIR / transcript_name
+    try:
+        text = transcript_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="转写文本不存在") from exc
+    return JSONResponse({"record": _asr_history_snapshot(record), "text": text})
+
+
+@app.patch("/api/asr/history/{record_id}")
+async def update_asr_history_name(record_id: str, body: dict = None):
+    """更新本地 ASR 历史记录名称。"""
+    name = str((body or {}).get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="记录名称不能为空")
+    if len(name) > 160:
+        raise HTTPException(status_code=400, detail="记录名称不能超过 160 个字符")
+    with _asr_history_lock:
+        records = _load_asr_history()
+        for record in records:
+            if record.get("id") == record_id:
+                record["name"] = name
+                _write_asr_history(records)
+                return JSONResponse({"ok": True, "record": _asr_history_snapshot(record)})
+    raise HTTPException(status_code=404, detail="转写历史不存在")
 
 
 @app.get("/api/asr/{pid}")
@@ -1687,12 +1821,13 @@ async def transcribe_with_qwen3_asr(pid: int, request: Request):
             if received == 0:
                 raise HTTPException(status_code=400, detail="请选择要上传的音频文件")
             result = await asyncio.to_thread(_transcribe_qwen3_asr, item, input_path, work_dir)
+            history_record = _save_asr_history_record(filename, result)
         except HTTPException:
             raise
         except (OSError, RuntimeError, httpx.HTTPError) as exc:
             raise HTTPException(status_code=502, detail=f"音频转写失败：{str(exc)[:1500]}") from exc
 
-    return JSONResponse({"ok": True, **result})
+    return JSONResponse({"ok": True, **result, "record": history_record})
 
 
 @app.get("/api/settings")
