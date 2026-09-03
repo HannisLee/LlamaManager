@@ -193,7 +193,7 @@ _download_lock   # 下载任务状态读写锁
 
 **启动已注册服务：**
 1. POST `/api/start` 只接收 `service_id`，从注册表读取完整命令和 GPU 选择
-2. 后端以 `nohup bash -lc <命令>` 创建独立会话；`stdout/stderr` 全部重定向到 `logs/services/command-<name>-<port或process>-<timestamp>.log`
+2. 后端以 `nohup bash -lc <命令>` 创建独立会话；命令以 `conda` 开头时自动解析本机 Conda 绝对路径，`stdout/stderr` 全部重定向到 `logs/services/command-<name>-<port或process>-<timestamp>.log`
 3. 勾选 GPU 时，进程环境注入 `CUDA_VISIBLE_DEVICES=<索引列表>`；未勾选则沿用系统可见 GPU
 4. 不再自动清理占用端口、不再有增量启动开关，也不要求命令包含端口；端口冲突由服务自身写入日志报告
 5. 写入 `_managed_processes[pid]` 和 `settings.json.managed_processes`，记录 `service_id` 与 `process_create_time`，支持后台重启后恢复管理

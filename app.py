@@ -595,6 +595,34 @@ def _command_tokens(command: str) -> list:
     return tokens
 
 
+def _find_conda_executable() -> Optional[str]:
+    """查找可供后台命令使用的 Conda 可执行文件。"""
+    conda_path = shutil.which("conda")
+    if conda_path:
+        return conda_path
+    candidates = []
+    conda_exe = os.environ.get("CONDA_EXE")
+    if conda_exe:
+        candidates.append(Path(conda_exe).expanduser())
+    for name in ("miniconda3", "anaconda3", "mambaforge", "miniforge3"):
+        candidates.append(Path.home() / name / "bin" / "conda")
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _prepare_service_command(command: str) -> str:
+    """为后台环境补全命令依赖，保留用户保存的原始命令。"""
+    tokens = _command_tokens(command)
+    if not tokens or tokens[0] != "conda":
+        return command
+    conda_path = _find_conda_executable()
+    if not conda_path:
+        return command
+    return re.sub(r"^\s*conda(?=\s|$)", shlex.quote(conda_path), command, count=1)
+
+
 def _get_option_value(tokens: list, names: set) -> Optional[str]:
     """从命令参数中读取 --key value 或 --key=value"""
     for i, token in enumerate(tokens):
@@ -2207,7 +2235,7 @@ async def start_server(body: dict = None):
         display_name = custom_service["name"]
         service_type = "command"
         # nohup 负责脱离终端，Popen 的 stdout/stderr 重定向确保所有输出进入独立日志文件。
-        cmd = ["nohup", "bash", "-lc", command]
+        cmd = ["nohup", "bash", "-lc", _prepare_service_command(command)]
         model_for_record = f"command:{custom_service['id']}"
         log_path = _create_process_log_path(service_type, display_name, port)
 
