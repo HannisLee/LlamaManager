@@ -249,3 +249,11 @@
 - 修复以 `conda run` 启动 Qwen3-ASR 等自定义服务时，后台服务 PATH 未包含 Conda 导致的“找不到 conda”错误
 - 启动前自动从 PATH、`CONDA_EXE` 及用户目录下常见 Conda 安装位置解析 Conda 的绝对路径
 - spec.md 同步更新自定义服务的 Conda 命令解析流程
+
+## v0.1.16 — 2026-09-04
+
+- 为运行中的 Qwen3-ASR-1.7B vLLM 服务适配专用 Open 页面；其他服务仍打开原有代理 WebUI
+- 专用页面支持选择音频、点击“开始解析”、显示完整转写文字并复制结果
+- 后端新增 Qwen3-ASR 专用页面、实例信息和音频转写 API；音频按静音切为最长 10 分钟的本地 FLAC 片段后依次调用 `/v1/audio/transcriptions`
+- 自动清理上传音频和切片临时文件，兼容 Qwen `<asr_text>` 标记及 OpenAI 风格返回
+- spec.md 同步更新专用转写流程和 API 文档

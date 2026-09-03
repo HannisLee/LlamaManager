@@ -3,8 +3,10 @@ LlamaManager - 轻量级 llama.cpp Web 管理工具
 通过单页面 WebUI 管理 llama-server 进程
 """
 
+import asyncio
 import csv
 import json
+import math
 import os
 import re
 import shlex
@@ -17,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 import httpx
 import psutil
@@ -63,6 +66,13 @@ GPU_SAMPLE_INTERVAL_SECONDS = 5
 # ── 下载任务状态 ───────────────────────────────────────
 _download_tasks: dict[str, dict] = {}
 _download_lock = threading.Lock()
+
+# ── Qwen3 ASR 临时转写 ────────────────────────────────────
+ASR_MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
+ASR_MAX_CHUNK_SECONDS = 600
+ASR_ALLOWED_AUDIO_SUFFIXES = {
+    ".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
+}
 
 app = FastAPI(title="LlamaManager")
 
@@ -1428,6 +1438,191 @@ def _stop_process_internal(pid: Optional[int] = None, clear_log: bool = True) ->
     return ", ".join(stopped) if stopped else None
 
 
+# ── Qwen3 ASR 音频转写 ────────────────────────────────────
+
+def _is_qwen3_asr_service(item: dict) -> bool:
+    """判断受管实例是否为 Qwen3-ASR-1.7B vLLM 服务。"""
+    if item.get("service_type") != "vllm":
+        return False
+    identity = " ".join(str(item.get(key) or "") for key in (
+        "display_name", "model_name", "model", "command",
+    )).lower()
+    return "qwen3-asr-1.7b" in identity
+
+
+def _get_qwen3_asr_item(pid: int) -> dict:
+    """读取仍在运行的 Qwen3-ASR-1.7B 受管实例。"""
+    with _process_lock:
+        _sync_current_from_managed()
+        item = _managed_processes.get(pid)
+        if item is None or not _is_process_running(item.get("process")):
+            raise HTTPException(status_code=404, detail=f"运行中的受管进程不存在: {pid}")
+        if not _is_qwen3_asr_service(item):
+            raise HTTPException(status_code=400, detail="该服务不是 Qwen3-ASR-1.7B，无法使用音频转写页")
+        return {
+            "pid": pid,
+            "port": item.get("port"),
+            "display_name": item.get("display_name") or "Qwen3-ASR-1.7B",
+            "command": list(item.get("command") or []),
+        }
+
+
+def _qwen3_asr_model_from_command(command: list) -> str:
+    """从 qwen-asr-serve 命令中读取模型位置。"""
+    for index, token in enumerate(command):
+        if Path(str(token)).name == "qwen-asr-serve" and index + 1 < len(command):
+            model = str(command[index + 1]).strip()
+            if model and not model.startswith("-"):
+                return model
+    model = _get_option_value(command, {"--model", "-m", "--model-path"})
+    return model or "Qwen3-ASR-1.7B"
+
+
+def _run_asr_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """运行本地音频处理命令，并把错误转换为便于展示的信息。"""
+    try:
+        return subprocess.run(command, text=True, capture_output=True, check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"未找到音频处理工具: {exc.filename}") from exc
+    except subprocess.CalledProcessError as exc:
+        message = (exc.stderr or exc.stdout or "音频处理失败").strip()
+        raise RuntimeError(message[-1200:]) from exc
+
+
+def _asr_probe_duration(input_path: Path) -> float:
+    """使用 ffprobe 获取音频时长。"""
+    result = _run_asr_command([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(input_path),
+    ])
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("无法读取音频时长") from exc
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("音频时长无效")
+    return duration
+
+
+def _asr_speech_intervals(input_path: Path, total_duration: float) -> list[tuple[float, float]]:
+    """通过静音检测取得语音段；检测失败时退回整段音频。"""
+    result = subprocess.run([
+        "ffmpeg", "-hide_banner", "-vn", "-i", str(input_path),
+        "-af", "silencedetect=noise=-35dB:d=0.6", "-f", "null", "-",
+    ], text=True, capture_output=True)
+    if result.returncode != 0:
+        return [(0.0, total_duration)]
+
+    starts: list[float] = []
+    ends: list[float] = []
+    for line in result.stderr.splitlines():
+        start_match = re.search(r"silence_start:\s*([0-9.]+)", line)
+        end_match = re.search(r"silence_end:\s*([0-9.]+)", line)
+        if start_match:
+            starts.append(float(start_match.group(1)))
+        elif end_match:
+            ends.append(float(end_match.group(1)))
+
+    intervals: list[tuple[float, float]] = []
+    cursor = 0.0
+    for index, silence_start in enumerate(starts):
+        speech_end = max(cursor, min(silence_start, total_duration))
+        if speech_end - cursor >= 0.3:
+            intervals.append((cursor, speech_end))
+        cursor = ends[index] if index < len(ends) else total_duration
+    if total_duration - cursor >= 0.3:
+        intervals.append((cursor, total_duration))
+    return intervals or [(0.0, total_duration)]
+
+
+def _asr_build_chunks(intervals: list[tuple[float, float]], total_duration: float) -> list[tuple[float, float]]:
+    """按静音边界合并语音段，单片最长 10 分钟。"""
+    chunks: list[tuple[float, float]] = []
+    current_start: Optional[float] = None
+    current_end: Optional[float] = None
+
+    for start, end in intervals:
+        while end - start > ASR_MAX_CHUNK_SECONDS:
+            if current_start is not None and current_end is not None:
+                chunks.append((current_start, current_end))
+                current_start = current_end = None
+            chunks.append((start, start + ASR_MAX_CHUNK_SECONDS))
+            start += ASR_MAX_CHUNK_SECONDS
+        if current_start is None:
+            current_start, current_end = start, end
+        elif end - current_start <= ASR_MAX_CHUNK_SECONDS:
+            current_end = end
+        else:
+            chunks.append((current_start, current_end or start))
+            current_start, current_end = start, end
+
+    if current_start is not None and current_end is not None:
+        chunks.append((current_start, min(current_end, total_duration)))
+    return [(round(start, 3), round(end, 3)) for start, end in chunks if end > start]
+
+
+def _asr_extract_text(response: dict) -> str:
+    """兼容 Qwen ASR 的 text 与 OpenAI choices 两种返回格式。"""
+    text = response.get("text")
+    if not isinstance(text, str):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            text = choices[0].get("message", {}).get("content")
+    if not isinstance(text, str):
+        return ""
+    text = re.sub(r"language\s+\S+\s*<asr_text>", " ", text, flags=re.I)
+    text = text.replace("<asr_text>", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
+    """切片并逐片请求本机 Qwen3-ASR 服务，返回合并后的全文。"""
+    total_duration = _asr_probe_duration(input_path)
+    chunks = _asr_build_chunks(_asr_speech_intervals(input_path, total_duration), total_duration)
+    if not chunks:
+        raise RuntimeError("未从音频中检测到可转写内容")
+
+    endpoint = f"http://127.0.0.1:{int(item['port'])}/v1/audio/transcriptions"
+    model = _qwen3_asr_model_from_command(item.get("command") or [])
+    texts: list[str] = []
+    timeout = httpx.Timeout(900.0, connect=10.0)
+    with httpx.Client(timeout=timeout) as client:
+        for index, (start, end) in enumerate(chunks, start=1):
+            chunk_path = work_dir / f"chunk-{index:03d}.flac"
+            _run_asr_command([
+                "ffmpeg", "-hide_banner", "-y", "-ss", f"{start:.3f}",
+                "-t", f"{end - start:.3f}", "-i", str(input_path), "-vn",
+                "-c:a", "flac", str(chunk_path),
+            ])
+            with chunk_path.open("rb") as audio_file:
+                response = client.post(
+                    endpoint,
+                    data={"model": model, "response_format": "json"},
+                    files={"file": (chunk_path.name, audio_file, "audio/flac")},
+                )
+            if response.is_error:
+                detail = response.text.strip()[-1200:]
+                raise RuntimeError(f"第 {index}/{len(chunks)} 段转写失败（HTTP {response.status_code}）：{detail}")
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise RuntimeError(f"第 {index}/{len(chunks)} 段返回了非 JSON 内容") from exc
+            if isinstance(payload, dict) and payload.get("error"):
+                raise RuntimeError(f"第 {index}/{len(chunks)} 段转写失败：{payload['error']}")
+            text = _asr_extract_text(payload if isinstance(payload, dict) else {})
+            if text:
+                texts.append(text)
+
+    transcript = "\n\n".join(texts).strip()
+    if not transcript:
+        raise RuntimeError("服务未返回可用文字，请确认音频内容和 ASR 服务日志")
+    return {
+        "text": transcript,
+        "chunks": len(chunks),
+        "duration": round(total_duration, 1),
+    }
+
+
 # ── API 端点 ──────────────────────────────────────────────
 
 @app.get("/")
@@ -1440,6 +1635,64 @@ async def index():
 async def get_icon():
     """返回网站图标"""
     return FileResponse(APP_DIR / "icon.png", media_type="image/png")
+
+
+@app.get("/asr/{pid}")
+async def qwen3_asr_page(pid: int):
+    """返回指定 Qwen3-ASR-1.7B 实例的专用转写页。"""
+    _get_qwen3_asr_item(pid)
+    return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/api/asr/{pid}")
+async def get_qwen3_asr_info(pid: int):
+    """获取 Qwen3-ASR-1.7B 专用转写页所需的实例信息。"""
+    item = _get_qwen3_asr_item(pid)
+    return JSONResponse({
+        "ok": True,
+        "pid": item["pid"],
+        "name": item["display_name"],
+        "max_chunk_seconds": ASR_MAX_CHUNK_SECONDS,
+    })
+
+
+@app.post("/api/asr/{pid}/transcriptions")
+async def transcribe_with_qwen3_asr(pid: int, request: Request):
+    """接收一个音频文件，临时切片后调用指定 Qwen3-ASR-1.7B 实例转写。"""
+    item = _get_qwen3_asr_item(pid)
+    filename = unquote(request.headers.get("x-audio-filename", "audio"))
+    filename = Path(filename).name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ASR_ALLOWED_AUDIO_SUFFIXES:
+        allowed = "、".join(sorted(item.lstrip(".") for item in ASR_ALLOWED_AUDIO_SUFFIXES))
+        raise HTTPException(status_code=400, detail=f"不支持的音频格式，请使用：{allowed}")
+    try:
+        content_length = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        content_length = 0
+    if content_length > ASR_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
+
+    with tempfile.TemporaryDirectory(prefix="llama-asr-") as temp_dir:
+        work_dir = Path(temp_dir)
+        input_path = work_dir / f"audio{suffix}"
+        received = 0
+        try:
+            with input_path.open("wb") as output:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > ASR_MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
+                    output.write(chunk)
+            if received == 0:
+                raise HTTPException(status_code=400, detail="请选择要上传的音频文件")
+            result = await asyncio.to_thread(_transcribe_qwen3_asr, item, input_path, work_dir)
+        except HTTPException:
+            raise
+        except (OSError, RuntimeError, httpx.HTTPError) as exc:
+            raise HTTPException(status_code=502, detail=f"音频转写失败：{str(exc)[:1500]}") from exc
+
+    return JSONResponse({"ok": True, **result})
 
 
 @app.get("/api/settings")

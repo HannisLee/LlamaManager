@@ -293,6 +293,41 @@
             overflow-y: auto;
         }
 
+        /* Qwen3 ASR 专用转写页 */
+        .asr-page {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 32px 20px;
+        }
+        .asr-page h1 {
+            text-align: left;
+            padding: 0 0 16px;
+            margin-bottom: 20px;
+        }
+        .asr-page .card h2 {
+            text-transform: none;
+            letter-spacing: 0;
+            color: #e0e0e0;
+        }
+        .asr-file-name {
+            color: #b7c7df;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
+        .asr-result-area {
+            min-height: 360px;
+            height: 52vh;
+            color: #edf4ff;
+            font-size: 0.98em;
+            line-height: 1.8;
+            white-space: pre-wrap;
+        }
+        .asr-hint {
+            color: #8fa1bd;
+            font-size: 0.88em;
+            margin-top: 6px;
+        }
+
         /* checkbox */
         .checkbox-row {
             display: flex;
@@ -777,6 +812,109 @@ async function api(method, path, body) {
         throw new Error(msg);
     }
     return data;
+}
+
+function isQwen3AsrProcess(proc) {
+    const identity = [proc?.display_name, proc?.model_name, proc?.model, proc?.command]
+        .filter(Boolean).join(" ").toLowerCase();
+    return (proc?.service_type === "vllm" || proc?.service_kind === "custom")
+        && identity.includes("qwen3-asr-1.7b");
+}
+
+function renderAsrPage() {
+    document.querySelector(".container").style.display = "none";
+    document.title = "Qwen3 ASR 音频转写";
+    document.body.insertAdjacentHTML("beforeend", `
+        <main class="asr-page">
+            <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> Qwen3 ASR 音频转写</h1>
+            <div class="card">
+                <h2 id="asr-service-name">正在连接服务...</h2>
+                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus">
+                <div id="asr-file-name" class="asr-file-name" style="margin-top:8px;">请选择一个音频文件</div>
+                <div class="asr-hint">音频仅在本机临时处理，按静音自动切片，单片最长 10 分钟。</div>
+                <div class="btn-group">
+                    <button class="btn-success" id="asr-transcribe-btn" disabled>开始解析</button>
+                    <button class="btn-secondary" onclick="window.close()">关闭页面</button>
+                </div>
+                <div id="asr-status" class="asr-hint"></div>
+            </div>
+            <div id="asr-result-card" class="card hidden">
+                <h2>转写结果</h2>
+                <textarea id="asr-result" class="log-area asr-result-area" readonly placeholder="点击“开始解析”后，完整文字会显示在这里"></textarea>
+                <div class="btn-group">
+                    <button class="btn-secondary" id="asr-copy-btn">复制文字</button>
+                </div>
+            </div>
+        </main>
+    `);
+}
+
+async function initAsrPage(pid) {
+    renderAsrPage();
+    const fileInput = document.getElementById("asr-audio-file");
+    const button = document.getElementById("asr-transcribe-btn");
+    const fileName = document.getElementById("asr-file-name");
+    const status = document.getElementById("asr-status");
+    const resultCard = document.getElementById("asr-result-card");
+    const resultArea = document.getElementById("asr-result");
+
+    try {
+        const service = await api("GET", `/api/asr/${pid}`);
+        document.getElementById("asr-service-name").textContent = `${service.name} · PID ${service.pid}`;
+        status.textContent = `服务已就绪，单片最长 ${Math.round((service.max_chunk_seconds || 600) / 60)} 分钟。`;
+    } catch (e) {
+        status.textContent = `无法连接 ASR 服务：${e.message}`;
+        return;
+    }
+
+    fileInput.addEventListener("change", () => {
+        const file = fileInput.files[0];
+        button.disabled = !file;
+        fileName.textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : "请选择一个音频文件";
+        if (file) status.textContent = "音频已选择，点击“开始解析”即可转写。";
+    });
+
+    button.addEventListener("click", async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        button.disabled = true;
+        fileInput.disabled = true;
+        resultCard.classList.remove("hidden");
+        resultArea.value = "";
+        status.textContent = "正在上传、切片并转写音频；长音频需要等待片段依次完成。";
+        try {
+            const response = await fetch(`/api/asr/${pid}/transcriptions`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": file.type || "application/octet-stream",
+                    "X-Audio-Filename": encodeURIComponent(file.name),
+                },
+                body: file,
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || data.error || "音频转写失败");
+            resultArea.value = data.text || "";
+            status.textContent = `解析完成：${data.chunks} 个片段，音频时长 ${data.duration} 秒。`;
+        } catch (e) {
+            status.textContent = `解析失败：${e.message}`;
+            showError(`音频转写失败：${e.message}`);
+        } finally {
+            button.disabled = false;
+            fileInput.disabled = false;
+        }
+    });
+
+    document.getElementById("asr-copy-btn").addEventListener("click", async () => {
+        if (!resultArea.value) return;
+        try {
+            await navigator.clipboard.writeText(resultArea.value);
+            status.textContent = "转写文字已复制。";
+        } catch (e) {
+            resultArea.select();
+            document.execCommand("copy");
+            status.textContent = "转写文字已复制。";
+        }
+    });
 }
 
 // ── 设置 ──────────────────────────────────────────────
@@ -1348,6 +1486,11 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 // 基于「当前实例」的一次性 stop/restart/openWebUI 已随启动改造废弃，统一用受管进程的 stop/restart/open
 
 function openManagedWebUI(pid) {
+    const proc = (managedProcessRecords || []).find(item => Number(item.pid) === Number(pid));
+    if (isQwen3AsrProcess(proc)) {
+        window.open(`/asr/${pid}`, "_blank");
+        return;
+    }
     window.open(`/llama-process/${pid}/`, "_blank");
 }
 
@@ -1580,6 +1723,11 @@ async function loadDownloadLogs() {
 // ── 初始化 ────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
+    const asrMatch = window.location.pathname.match(/^\/asr\/(\d+)\/?$/);
+    if (asrMatch) {
+        initAsrPage(Number(asrMatch[1]));
+        return;
+    }
     initGpuCardsPerRow();
     loadSettings()
         .then(() => Promise.all([loadModels(), loadVllmRepositories(), loadCustomServices()]))
