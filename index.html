@@ -364,12 +364,21 @@
             text-align: left;
         }
         .asr-history-toggle strong {
+            flex: 1 1 auto;
+            min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            line-height: 1.35;
+        }
+        .asr-history-toggle .badge {
+            flex: 0 0 auto;
             white-space: nowrap;
         }
         .asr-history-meta {
-            margin-left: auto;
+            flex: 0 0 auto;
             color: #8fa1bd;
             font-size: 0.82em;
             white-space: nowrap;
@@ -378,7 +387,32 @@
             padding: 0 12px 12px;
             border-top: 1px solid #2f3b52;
         }
-        .asr-history-content textarea {
+        .asr-history-edit {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: stretch;
+            margin-top: 10px;
+        }
+        .asr-history-name-input {
+            width: 100%;
+            min-height: 58px;
+            padding: 8px 10px;
+            resize: vertical;
+            background: #0f1629;
+            border: 1px solid #48698f;
+            border-radius: 4px;
+            color: #edf4ff;
+            font-size: 1em;
+            line-height: 1.5;
+        }
+        .asr-history-edit-actions {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .asr-history-text {
             min-height: 180px;
             height: 260px;
             margin-top: 10px;
@@ -602,6 +636,9 @@
             }
             .download-task-actions {
                 justify-content: flex-start;
+            }
+            .asr-history-edit {
+                grid-template-columns: 1fr;
             }
             .gpu-wave-grid,
             .gpu-wave-grid.cols-2,
@@ -949,12 +986,14 @@ function renderAsrHistory() {
         const cachedText = asrHistoryTextCache.get(record.id);
         const content = expanded && status === "completed" ? `
             <div class="asr-history-content">
-                <div class="btn-group" style="align-items:center;">
-                    <input id="asr-history-name-${record.id}" type="text" value="${escapeHtml(record.name || "")}" maxlength="160" aria-label="记录名称">
-                    <button class="btn-secondary" onclick="saveAsrHistoryName('${record.id}')">保存名称</button>
-                    <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制文字</button>
+                <div class="asr-history-edit">
+                    <textarea id="asr-history-name-${record.id}" class="asr-history-name-input" rows="2" maxlength="160" aria-label="记录名称">${escapeHtml(record.name || "")}</textarea>
+                    <div class="asr-history-edit-actions">
+                        <button class="btn-secondary" onclick="saveAsrHistoryName('${record.id}')">保存名称</button>
+                        <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制文字</button>
+                    </div>
                 </div>
-                <textarea id="asr-history-text-${record.id}" class="log-area" readonly>${escapeHtml(cachedText || "正在读取转写文字...")}</textarea>
+                <textarea id="asr-history-text-${record.id}" class="log-area asr-history-text" readonly>${escapeHtml(cachedText || "正在读取转写文字...")}</textarea>
             </div>` : "";
         return `
             <div class="asr-history-item">
