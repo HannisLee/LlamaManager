@@ -939,6 +939,8 @@ function serviceCategoryLabel(category) {
 let asrHistoryRecords = [];
 let asrExpandedRecordId = "";
 const asrHistoryTextCache = new Map();
+const asrExtractionTextCache = new Map();
+const asrHistoryDisplayModes = new Map();
 
 function formatAsrDate(timestamp) {
     if (!timestamp) return "-";
@@ -990,6 +992,14 @@ function renderAsrPage() {
                 <div id="asr-history-list" class="asr-history-list"><div class="custom-service-empty">正在读取历史记录...</div></div>
                 <div class="asr-hint">最新上传的记录置顶。仅保存文字与基础信息；原始音频和临时切片不会保留。</div>
             </div>
+            <div class="card">
+                <h2>信息提取提示词</h2>
+                <textarea id="asr-extraction-prompt" class="log-area" rows="6" maxlength="4000" aria-label="信息提取提示词"></textarea>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="saveAsrExtractionPrompt()">保存提示词</button>
+                    <span id="asr-extraction-prompt-status" class="asr-hint"></span>
+                </div>
+            </div>
         </main>
     `);
 }
@@ -1005,7 +1015,10 @@ function renderAsrHistory() {
         const status = record.status || "completed";
         const durationText = record.duration === null || record.duration === undefined ? "时长待获取" : `${record.duration} 秒`;
         const meta = `${formatAsrDate(record.uploaded_at)} · ${record.original_filename || "未知文件"} · ${durationText}`;
-        const cachedText = asrHistoryTextCache.get(record.id);
+        const displayMode = asrHistoryDisplayModes.get(record.id) || "original";
+        const showingExtraction = displayMode === "extraction";
+        const cachedText = showingExtraction ? asrExtractionTextCache.get(record.id) : asrHistoryTextCache.get(record.id);
+        const textPlaceholder = showingExtraction ? "正在读取提取结果..." : "正在读取转写文字...";
         const content = expanded && status === "completed" ? `
             <div class="asr-history-content">
                 <div class="asr-history-edit">
@@ -1015,7 +1028,12 @@ function renderAsrHistory() {
                         <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制文字</button>
                     </div>
                 </div>
-                <textarea id="asr-history-text-${record.id}" class="log-area asr-history-text" readonly>${escapeHtml(cachedText || "正在读取转写文字...")}</textarea>
+                <div class="asr-history-edit-actions" style="margin-top:8px;">
+                    <button class="btn-secondary" onclick="showAsrOriginal('${record.id}')">原文</button>
+                    <button class="btn-secondary" id="asr-extract-${record.id}" onclick="extractOrShowAsrHistory('${record.id}')">${record.has_extraction ? "已提取" : "一键提取"}</button>
+                    <span class="asr-hint">${showingExtraction ? "当前显示：提取结果" : "当前显示：原文"}</span>
+                </div>
+                <textarea id="asr-history-text-${record.id}" class="log-area asr-history-text" readonly>${escapeHtml(cachedText || textPlaceholder)}</textarea>
             </div>` : "";
         return `
             <div class="asr-history-item">
@@ -1050,14 +1068,61 @@ async function toggleAsrHistoryItem(recordId) {
     }
     asrExpandedRecordId = recordId;
     renderAsrHistory();
+    await loadAsrHistoryDisplayText(recordId);
+}
+
+async function loadAsrHistoryDisplayText(recordId) {
+    const record = asrHistoryRecords.find(item => item.id === recordId);
+    if (!record) return;
+    const mode = asrHistoryDisplayModes.get(recordId) || "original";
+    const cache = mode === "extraction" ? asrExtractionTextCache : asrHistoryTextCache;
     const textArea = document.getElementById(`asr-history-text-${recordId}`);
-    if (asrHistoryTextCache.has(recordId)) return;
+    if (cache.has(recordId)) {
+        if (textArea) textArea.value = cache.get(recordId) || "";
+        return;
+    }
     try {
-        const data = await api("GET", `/api/asr/history/${encodeURIComponent(recordId)}/text`);
-        asrHistoryTextCache.set(recordId, data.text || "");
+        const suffix = mode === "extraction" ? "/extraction" : "/text";
+        const data = await api("GET", `/api/asr/history/${encodeURIComponent(recordId)}${suffix}`);
+        cache.set(recordId, data.text || "");
         if (asrExpandedRecordId === recordId && textArea) textArea.value = data.text || "";
     } catch (e) {
         if (asrExpandedRecordId === recordId && textArea) textArea.value = `读取失败：${e.message}`;
+    }
+}
+
+async function showAsrOriginal(recordId) {
+    asrHistoryDisplayModes.set(recordId, "original");
+    renderAsrHistory();
+    await loadAsrHistoryDisplayText(recordId);
+}
+
+async function extractOrShowAsrHistory(recordId) {
+    const record = asrHistoryRecords.find(item => item.id === recordId);
+    if (!record) return;
+    if (record.has_extraction) {
+        asrHistoryDisplayModes.set(recordId, "extraction");
+        renderAsrHistory();
+        await loadAsrHistoryDisplayText(recordId);
+        return;
+    }
+    const button = document.getElementById(`asr-extract-${recordId}`);
+    if (button) {
+        button.disabled = true;
+        button.textContent = "正在提取...";
+    }
+    try {
+        const data = await api("POST", `/api/asr/history/${encodeURIComponent(recordId)}/extraction`);
+        asrExtractionTextCache.set(recordId, data.text || "");
+        record.has_extraction = true;
+        asrHistoryDisplayModes.set(recordId, "extraction");
+        renderAsrHistory();
+        await loadAsrHistoryDisplayText(recordId);
+    } catch (e) {
+        if (button) {
+            button.disabled = false;
+            button.textContent = "一键提取";
+        }
     }
 }
 
@@ -1085,13 +1150,16 @@ async function deleteAsrHistory(recordId) {
     try {
         await api("DELETE", `/api/asr/history/${encodeURIComponent(recordId)}`);
         asrHistoryTextCache.delete(recordId);
+        asrExtractionTextCache.delete(recordId);
+        asrHistoryDisplayModes.delete(recordId);
         if (asrExpandedRecordId === recordId) asrExpandedRecordId = "";
         await loadAsrHistory();
     } catch (e) {}
 }
 
 async function copyAsrHistoryText(recordId) {
-    const text = asrHistoryTextCache.get(recordId);
+    const mode = asrHistoryDisplayModes.get(recordId) || "original";
+    const text = (mode === "extraction" ? asrExtractionTextCache : asrHistoryTextCache).get(recordId);
     if (!text) return;
     try {
         await navigator.clipboard.writeText(text);
@@ -1101,6 +1169,27 @@ async function copyAsrHistoryText(recordId) {
             textArea.select();
             document.execCommand("copy");
         }
+    }
+}
+
+async function loadAsrExtractionPrompt() {
+    const data = await api("GET", "/api/asr/extraction-settings");
+    document.getElementById("asr-extraction-prompt").value = data.prompt || "";
+}
+
+async function saveAsrExtractionPrompt() {
+    const status = document.getElementById("asr-extraction-prompt-status");
+    const prompt = document.getElementById("asr-extraction-prompt").value.trim();
+    if (!prompt) {
+        showError("提取提示词不能为空");
+        return;
+    }
+    try {
+        const data = await api("PUT", "/api/asr/extraction-settings", { prompt });
+        document.getElementById("asr-extraction-prompt").value = data.prompt || prompt;
+        status.textContent = "提示词已保存";
+    } catch (e) {
+        status.textContent = `保存失败：${e.message}`;
     }
 }
 
@@ -1124,6 +1213,7 @@ async function initAsrPage() {
 
     try {
         await loadAsrHistory();
+        await loadAsrExtractionPrompt();
         setInterval(() => loadAsrHistory().catch(() => {}), 3000);
     } catch (e) {
         document.getElementById("asr-history-list").innerHTML = '<div class="custom-service-empty">历史记录读取失败</div>';

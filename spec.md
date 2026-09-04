@@ -115,8 +115,12 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/asr` | 返回固定地址的 ASR 专用音频转写页 |
 | GET | `/api/asr/history` | 返回本地 ASR 历史记录摘要（不含全文） |
 | GET | `/api/asr/history/{record_id}/text` | 读取指定本地 ASR 历史的全文 |
+| GET | `/api/asr/history/{record_id}/extraction` | 读取指定 ASR 历史已保存的信息提取结果 |
+| POST | `/api/asr/history/{record_id}/extraction` | 使用已配置 OpenAI 兼容模型提取指定转写的关键信息 |
 | PATCH | `/api/asr/history/{record_id}` | 修改指定 ASR 历史记录的自定义名称 |
 | DELETE | `/api/asr/history/{record_id}` | 删除已结束的 ASR 历史记录及其保存的全文 |
+| GET | `/api/asr/extraction-settings` | 读取 ASR 信息提取提示词 |
+| PUT | `/api/asr/extraction-settings` | 保存 ASR 信息提取提示词 |
 | GET | `/api/asr` | 获取唯一运行中的 ASR 实例信息 |
 | POST | `/api/asr/transcriptions` | 上传一个音频，创建历史 item 并在后台队列中转写，立即返回 `202` |
 | POST | `/api/start` | 启动已注册服务（model 为 `custom:<id>` 启 vLLM，或 `llama:<id>` 启 llama.cpp） |
@@ -217,8 +221,9 @@ _download_lock   # 下载任务状态读写锁
 3. 后端自动使用唯一运行中的 ASR 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
 5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
-6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
-7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数和状态；只有点击「已完成」条目时才按需读取全文，并可修改记录名称或删除已结束的记录
+6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，信息提取结果保存到 `data/asr_history/<记录 ID>.extracted.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
+7. 专用页以最新上传在前的时间倒序展示可展开 item，列表保存自定义名称、原始文件名、上传时间、时长、片段数、状态和是否已提取；已完成条目可在原文与信息提取结果间切换，并可修改记录名称或删除已结束的记录
+8. 历史列表下方提供可保存的信息提取提示词。默认提示词用于去除抖音音频转写的口头禅和冗余内容，保留关键事实、观点、步骤、数字和结论，且禁止编造原文未提供的信息
 
 **下载模型：**
 1. 校验仓库名（`owner/repo`）；指定文件名时校验 `.gguf` 结尾，留空则全量下载

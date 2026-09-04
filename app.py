@@ -80,6 +80,12 @@ ASR_ALLOWED_AUDIO_SUFFIXES = {
 }
 ASR_HISTORY_DIR = APP_DIR / "data" / "asr_history"
 ASR_HISTORY_INDEX_PATH = ASR_HISTORY_DIR / "records.json"
+ASR_EXTRACTION_PROMPT_KEY = "asr_extraction_prompt"
+ASR_DEFAULT_EXTRACTION_PROMPT = (
+    "以下内容是一个抖音视频的音频转写。请去除口头禅、重复、无关寒暄和其他冗余内容，"
+    "准确提炼视频真正要传达的关键信息。请用清晰、简洁的中文输出；保留必要的事实、观点、"
+    "步骤、数字和结论，不要编造或补充原文没有的信息。"
+)
 _asr_history_lock = threading.RLock()
 ASR_JOB_DIR = APP_DIR / "data" / "asr_jobs"
 ASR_MAX_CONCURRENT_TASKS = 1
@@ -1845,6 +1851,7 @@ def _asr_history_snapshot(record: dict) -> dict:
         "text_length": record.get("text_length", 0),
         "status": record.get("status") or "completed",
         "error": record.get("error"),
+        "has_extraction": bool(record.get("extraction_file")),
     }
 
 
@@ -1951,6 +1958,101 @@ def _find_asr_history_record(record_id: str) -> dict:
     raise HTTPException(status_code=404, detail="转写历史不存在")
 
 
+def _read_asr_history_text_file(record: dict, field: str, missing_detail: str) -> str:
+    """读取历史记录关联的文本文件，文件名始终限制在历史目录内。"""
+    filename = Path(str(record.get(field) or "")).name
+    if not filename:
+        raise HTTPException(status_code=404, detail=missing_detail)
+    try:
+        return (ASR_HISTORY_DIR / filename).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail=missing_detail) from exc
+
+
+def _get_asr_extraction_prompt() -> str:
+    """读取 ASR 信息提取提示词，未设置时使用默认提示词。"""
+    prompt = str(_load_settings_raw().get(ASR_EXTRACTION_PROMPT_KEY) or "").strip()
+    return prompt or ASR_DEFAULT_EXTRACTION_PROMPT
+
+
+def _save_asr_extraction_prompt(prompt: str) -> str:
+    """保存 ASR 信息提取提示词。"""
+    value = str(prompt or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="提取提示词不能为空")
+    if len(value) > 4000:
+        raise HTTPException(status_code=400, detail="提取提示词不能超过 4000 个字符")
+    with _settings_lock:
+        settings = _load_settings_raw()
+        settings[ASR_EXTRACTION_PROMPT_KEY] = value
+        _write_settings_raw(settings)
+    return value
+
+
+def _save_asr_extraction(record_id: str, text: str) -> dict:
+    """保存一条 ASR 信息提取结果，并更新历史索引。"""
+    filename = f"{record_id}.extracted.txt"
+    ASR_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    target_path = ASR_HISTORY_DIR / filename
+    fd, temp_path = tempfile.mkstemp(dir=str(ASR_HISTORY_DIR), suffix=".txt.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(text)
+        os.replace(temp_path, target_path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    return _update_asr_history_record(record_id, {"extraction_file": filename})
+
+
+async def _extract_asr_history(record_id: str) -> tuple[dict, str]:
+    """调用已配置的 OpenAI 兼容 API，提取 ASR 转写中的关键信息。"""
+    record = _find_asr_history_record(record_id)
+    if (record.get("status") or "completed") != "completed":
+        raise HTTPException(status_code=409, detail="仅已完成的转写可以提取信息")
+    source_text = _read_asr_history_text_file(record, "transcript_file", "转写文本不存在")
+    if not source_text.strip():
+        raise HTTPException(status_code=400, detail="转写文本为空，无法提取")
+
+    settings = _load_settings_raw()
+    base_url = str(settings.get(OPENAI_API_BASE_URL_KEY) or "").strip().rstrip("/")
+    api_key = str(settings.get(OPENAI_API_KEY_KEY) or "").strip()
+    model = str(settings.get("openai_api_model") or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="请先在设置中保存 OpenAI 兼容 API 地址")
+    if not model:
+        raise HTTPException(status_code=400, detail="请先在设置中选择 OpenAI 兼容 API 模型")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _get_asr_extraction_prompt()},
+            {"role": "user", "content": f"请处理以下音频转写：\n\n{source_text}"},
+        ],
+        "temperature": 0.2,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            response = await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"信息提取请求失败：{str(exc)[:300]}") from exc
+    if response.is_error:
+        raise HTTPException(status_code=502, detail=f"信息提取服务返回 HTTP {response.status_code}")
+    try:
+        response_data = response.json()
+        text = response_data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="信息提取服务返回格式不符合 OpenAI 兼容规范") from exc
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=502, detail="信息提取服务未返回有效文字")
+    snapshot = _save_asr_extraction(record_id, text.strip())
+    return snapshot, text.strip()
+
+
 def _delete_asr_history_record(record_id: str) -> dict:
     """删除已结束的 ASR 历史记录及其保存的转写全文。"""
     with _asr_history_lock:
@@ -1963,9 +2065,12 @@ def _delete_asr_history_record(record_id: str) -> dict:
             deleted_record = records.pop(index)
             _write_asr_history(records)
             transcript_name = Path(str(deleted_record.get("transcript_file") or "")).name
-            if transcript_name:
+            extraction_name = Path(str(deleted_record.get("extraction_file") or "")).name
+            for filename in (transcript_name, extraction_name):
+                if not filename:
+                    continue
                 try:
-                    (ASR_HISTORY_DIR / transcript_name).unlink()
+                    (ASR_HISTORY_DIR / filename).unlink()
                 except FileNotFoundError:
                     pass
                 except OSError as exc:
@@ -2010,15 +2115,23 @@ async def get_asr_history():
 async def get_asr_history_text(record_id: str):
     """读取一条本地 ASR 转写历史的全文。"""
     record = _find_asr_history_record(record_id)
-    transcript_name = Path(str(record.get("transcript_file") or "")).name
-    if not transcript_name:
-        raise HTTPException(status_code=404, detail="转写文本不存在")
-    transcript_path = ASR_HISTORY_DIR / transcript_name
-    try:
-        text = transcript_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HTTPException(status_code=404, detail="转写文本不存在") from exc
+    text = _read_asr_history_text_file(record, "transcript_file", "转写文本不存在")
     return JSONResponse({"record": _asr_history_snapshot(record), "text": text})
+
+
+@app.get("/api/asr/history/{record_id}/extraction")
+async def get_asr_history_extraction(record_id: str):
+    """读取一条 ASR 历史已保存的信息提取结果。"""
+    record = _find_asr_history_record(record_id)
+    text = _read_asr_history_text_file(record, "extraction_file", "尚未提取信息")
+    return JSONResponse({"record": _asr_history_snapshot(record), "text": text})
+
+
+@app.post("/api/asr/history/{record_id}/extraction")
+async def extract_asr_history(record_id: str):
+    """调用 OpenAI 兼容模型提取一条 ASR 转写的关键信息。"""
+    record, text = await _extract_asr_history(record_id)
+    return JSONResponse({"ok": True, "record": record, "text": text})
 
 
 @app.patch("/api/asr/history/{record_id}")
@@ -2044,6 +2157,19 @@ async def delete_asr_history(record_id: str):
     """删除一条已结束的本地 ASR 转写历史。"""
     record = _delete_asr_history_record(record_id)
     return JSONResponse({"ok": True, "record": record})
+
+
+@app.get("/api/asr/extraction-settings")
+async def get_asr_extraction_settings():
+    """读取 ASR 信息提取提示词。"""
+    return JSONResponse({"prompt": _get_asr_extraction_prompt()})
+
+
+@app.put("/api/asr/extraction-settings")
+async def update_asr_extraction_settings(body: dict = None):
+    """更新 ASR 信息提取提示词。"""
+    prompt = _save_asr_extraction_prompt((body or {}).get("prompt"))
+    return JSONResponse({"ok": True, "prompt": prompt})
 
 
 @app.get("/api/asr")
