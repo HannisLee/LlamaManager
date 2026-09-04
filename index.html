@@ -164,17 +164,41 @@
         }
         .custom-service-row {
             display: grid;
-            grid-template-columns: minmax(120px, 0.9fr) 70px minmax(220px, 2fr) auto;
-            gap: 8px;
-            align-items: center;
-            padding: 8px 0;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 16px;
+            align-items: start;
+            padding: 12px 0;
             border-bottom: 1px solid #263247;
             font-size: 0.88em;
         }
         .custom-service-row:last-child {
             border-bottom: none;
         }
-        .custom-service-row code {
+        .custom-service-details {
+            display: grid;
+            gap: 6px;
+            min-width: 0;
+        }
+        .custom-service-name {
+            min-width: 0;
+        }
+        .custom-service-field {
+            display: grid;
+            grid-template-columns: 72px minmax(0, 1fr);
+            gap: 8px;
+            align-items: baseline;
+            min-width: 0;
+        }
+        .custom-service-label {
+            color: #7d8ba3;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .custom-service-value {
+            color: #aaa;
+            min-width: 0;
+        }
+        .custom-service-command {
             color: #b7c7df;
             white-space: nowrap;
             overflow: hidden;
@@ -636,6 +660,9 @@
             .custom-service-row {
                 grid-template-columns: 1fr;
                 align-items: start;
+            }
+            .custom-service-field {
+                grid-template-columns: 64px minmax(0, 1fr);
             }
             .download-task-row {
                 grid-template-columns: 1fr;
@@ -1222,9 +1249,21 @@ function renderRegisteredServices() {
             ? `GPU ${service.gpu_indexes.join(",")}` : "使用全部 GPU";
         return `
         <div class="custom-service-row">
-            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}<span style="font-size:0.8em;color:#7d8ba3;"> · ${escapeHtml(categoryText)}</span></strong>
-            <span style="font-size:0.82em; color:#aaa;">${escapeHtml(gpuText)}</span>
-            <code title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
+            <div class="custom-service-details">
+                <strong class="custom-service-name" title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}</strong>
+                <div class="custom-service-field">
+                    <span class="custom-service-label">服务类型</span>
+                    <span class="custom-service-value">${escapeHtml(categoryText)}</span>
+                </div>
+                <div class="custom-service-field">
+                    <span class="custom-service-label">GPU</span>
+                    <span class="custom-service-value">${escapeHtml(gpuText)}</span>
+                </div>
+                <div class="custom-service-field">
+                    <span class="custom-service-label">启动命令</span>
+                    <code class="custom-service-command" title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
+                </div>
+            </div>
             <div class="custom-service-actions">
                 ${launchActions}
                 <button class="btn-secondary" onclick="editService('${escapeHtml(service.id)}')">编辑</button>
