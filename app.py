@@ -2105,6 +2105,12 @@ async def redirect_legacy_qwen3_asr_page(pid: int):
     return RedirectResponse(url="/asr", status_code=307)
 
 
+@app.get("/chat/{pid}")
+async def generic_chat_page(pid: int):
+    """返回指定标准 LLM 服务的通用聊天页。"""
+    return FileResponse(APP_DIR / "index.html")
+
+
 @app.get("/api/asr/history")
 async def get_asr_history():
     """获取本地保存的 ASR 转写历史摘要。"""

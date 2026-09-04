@@ -462,6 +462,99 @@
             margin-top: 10px;
         }
 
+        /* 通用 OpenAI 兼容聊天页 */
+        .generic-chat-page {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 32px 20px;
+        }
+        .generic-chat-page h1 {
+            text-align: left;
+            padding: 0 0 16px;
+            margin-bottom: 20px;
+        }
+        .generic-chat-page .card h2 {
+            text-transform: none;
+            letter-spacing: 0;
+            color: #e0e0e0;
+        }
+        .generic-chat-settings {
+            display: grid;
+            grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
+            gap: 10px;
+        }
+        .generic-chat-input {
+            width: 100%;
+            padding: 9px 10px;
+            background: #0f1629;
+            border: 1px solid #48698f;
+            border-radius: 4px;
+            color: #edf4ff;
+            font-size: 0.95em;
+        }
+        .generic-chat-input:focus {
+            outline: none;
+            border-color: #4e9cff;
+        }
+        .generic-chat-messages {
+            display: grid;
+            gap: 12px;
+            min-height: 360px;
+            max-height: 58vh;
+            overflow-y: auto;
+            padding: 4px;
+        }
+        .generic-chat-empty {
+            color: #8fa1bd;
+            text-align: center;
+            padding: 80px 20px;
+        }
+        .generic-chat-message {
+            max-width: min(88%, 860px);
+            padding: 12px 14px;
+            border: 1px solid #2f3b52;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .generic-chat-message-user {
+            justify-self: end;
+            background: #173d6b;
+            border-color: #2f6eae;
+        }
+        .generic-chat-message-assistant {
+            justify-self: start;
+            background: #101b32;
+        }
+        .generic-chat-message-error {
+            justify-self: start;
+            color: #ffb3b3;
+            background: #351c2a;
+            border-color: #8d354f;
+        }
+        .generic-chat-role {
+            display: block;
+            margin-bottom: 5px;
+            color: #8fa1bd;
+            font-size: 0.78em;
+        }
+        .generic-chat-composer {
+            width: 100%;
+            min-height: 92px;
+            padding: 10px;
+            resize: vertical;
+            background: #0f1629;
+            border: 1px solid #48698f;
+            border-radius: 4px;
+            color: #edf4ff;
+            font: inherit;
+            line-height: 1.5;
+        }
+        .generic-chat-composer:focus {
+            outline: none;
+            border-color: #4e9cff;
+        }
+
         /* checkbox */
         .checkbox-row {
             display: flex;
@@ -686,6 +779,12 @@
             }
             .asr-history-edit {
                 grid-template-columns: 1fr;
+            }
+            .generic-chat-settings {
+                grid-template-columns: 1fr;
+            }
+            .generic-chat-message {
+                max-width: 96%;
             }
             .gpu-wave-grid,
             .gpu-wave-grid.cols-2,
@@ -951,6 +1050,221 @@ let asrExpandedRecordId = "";
 const asrHistoryTextCache = new Map();
 const asrExtractionTextCache = new Map();
 const asrHistoryDisplayModes = new Map();
+let genericChatMessages = [];
+let genericChatSending = false;
+
+function genericChatPathPid() {
+    const match = window.location.pathname.match(/^\/chat\/(\d+)\/?$/);
+    return match ? Number(match[1]) : null;
+}
+
+function renderGenericChatPage() {
+    document.querySelector(".container").style.display = "none";
+    document.title = "通用模型对话 · LlamaManager";
+    document.body.insertAdjacentHTML("beforeend", `
+        <main class="generic-chat-page">
+            <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> 通用模型对话</h1>
+            <div class="card">
+                <h2 id="generic-chat-service-name">正在连接模型服务...</h2>
+                <div class="generic-chat-settings">
+                    <input id="generic-chat-model" class="generic-chat-input" list="generic-chat-model-list" placeholder="模型名称">
+                    <input id="generic-chat-system-prompt" class="generic-chat-input" placeholder="系统提示词（可选）" value="你是一个乐于助人的 AI 助手。">
+                </div>
+                <datalist id="generic-chat-model-list"></datalist>
+                <div class="btn-group">
+                    <button class="btn-secondary" id="generic-chat-refresh-models">刷新模型列表</button>
+                    <button class="btn-secondary" id="generic-chat-clear">清空对话</button>
+                    <button class="btn-secondary" onclick="window.close()">关闭页面</button>
+                </div>
+                <div id="generic-chat-status" class="asr-hint">正在读取服务支持的模型...</div>
+            </div>
+            <div class="card">
+                <h2>对话</h2>
+                <div id="generic-chat-messages" class="generic-chat-messages"></div>
+                <textarea id="generic-chat-composer" class="generic-chat-composer" placeholder="输入消息，按 Ctrl + Enter 发送"></textarea>
+                <div class="btn-group">
+                    <button class="btn-success" id="generic-chat-send">发送</button>
+                    <span class="asr-hint">支持 OpenAI 兼容的 `/v1/models` 与 `/v1/chat/completions` 接口。</span>
+                </div>
+            </div>
+        </main>
+    `);
+}
+
+function renderGenericChatMessages() {
+    const wrap = document.getElementById("generic-chat-messages");
+    if (!wrap) return;
+    if (!genericChatMessages.length) {
+        wrap.innerHTML = '<div class="generic-chat-empty">从下方输入消息开始对话。</div>';
+        return;
+    }
+    const labels = { user: "你", assistant: "模型", error: "请求失败" };
+    wrap.innerHTML = genericChatMessages.map(message => `
+        <div class="generic-chat-message generic-chat-message-${message.role}">
+            <span class="generic-chat-role">${labels[message.role] || "模型"}</span>${escapeHtml(message.content || "")}
+        </div>
+    `).join("");
+    wrap.scrollTop = wrap.scrollHeight;
+}
+
+function genericChatContent(value) {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+        return value.map(item => typeof item === "string" ? item : (item.text || "")).join("");
+    }
+    return value ? String(value) : "";
+}
+
+async function loadGenericChatModels(pid) {
+    const modelInput = document.getElementById("generic-chat-model");
+    const modelList = document.getElementById("generic-chat-model-list");
+    const status = document.getElementById("generic-chat-status");
+    status.textContent = "正在读取服务支持的模型...";
+    try {
+        const response = await fetch(`/llama-process/${pid}/v1/models`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || data.error?.message || "模型列表读取失败");
+        const models = (Array.isArray(data.data) ? data.data : []).map(item => item.id || item.model || item.name).filter(Boolean);
+        modelList.innerHTML = models.map(model => `<option value="${escapeHtml(model)}"></option>`).join("");
+        if (!modelInput.value && models.length) modelInput.value = models[0];
+        status.textContent = models.length
+            ? `已读取 ${models.length} 个模型。也可手动输入服务支持的模型名称。`
+            : "服务未返回模型列表，请手动输入模型名称。";
+    } catch (e) {
+        status.textContent = `无法读取模型列表：${e.message}。可手动输入模型名称后尝试发送。`;
+    }
+}
+
+async function loadGenericChatServiceInfo(pid) {
+    const title = document.getElementById("generic-chat-service-name");
+    try {
+        const data = await api("GET", "/api/managed-processes");
+        const service = (data.processes || []).find(item => Number(item.pid) === pid);
+        title.textContent = service
+            ? `${service.display_name || service.model_name || "模型服务"} · PID ${pid}`
+            : `模型服务 · PID ${pid}`;
+    } catch (e) {
+        title.textContent = `模型服务 · PID ${pid}`;
+    }
+}
+
+function processGenericChatPayload(payload, assistantMessage) {
+    if (payload?.error) return payload.error.message || payload.error.detail || "模型服务返回错误";
+    const choice = payload?.choices?.[0];
+    if (!choice) return "";
+    const delta = choice.delta || choice.message || {};
+    const content = genericChatContent(delta.content);
+    const reasoning = genericChatContent(delta.reasoning_content);
+    if (reasoning) assistantMessage.content += reasoning;
+    if (content) assistantMessage.content += content;
+    if (reasoning || content) renderGenericChatMessages();
+    return "";
+}
+
+async function sendGenericChatMessage(pid) {
+    if (genericChatSending) return;
+    const composer = document.getElementById("generic-chat-composer");
+    const modelInput = document.getElementById("generic-chat-model");
+    const systemPrompt = document.getElementById("generic-chat-system-prompt");
+    const status = document.getElementById("generic-chat-status");
+    const sendButton = document.getElementById("generic-chat-send");
+    const content = composer.value.trim();
+    const model = modelInput.value.trim();
+    if (!content) return;
+    if (!model) {
+        status.textContent = "请先选择或输入模型名称。";
+        modelInput.focus();
+        return;
+    }
+
+    genericChatSending = true;
+    composer.value = "";
+    composer.disabled = true;
+    sendButton.disabled = true;
+    genericChatMessages.push({ role: "user", content });
+    const assistantMessage = { role: "assistant", content: "" };
+    genericChatMessages.push(assistantMessage);
+    renderGenericChatMessages();
+    status.textContent = "模型正在生成回复...";
+    try {
+        const messages = genericChatMessages
+            .filter(message => message.role === "user" || message.role === "assistant")
+            .filter(message => message !== assistantMessage);
+        if (systemPrompt.value.trim()) messages.unshift({ role: "system", content: systemPrompt.value.trim() });
+        const response = await fetch(`/llama-process/${pid}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+            body: JSON.stringify({ model, messages, stream: true }),
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.detail || data.error?.message || "模型请求失败");
+        }
+        if (!response.body) throw new Error("浏览器不支持流式响应");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamError = "";
+        const consumeEvent = eventText => {
+            const dataText = eventText.split("\n")
+                .filter(line => line.startsWith("data:"))
+                .map(line => line.slice(5).trim())
+                .join("\n");
+            const payloadText = dataText || eventText.trim();
+            if (!payloadText || payloadText === "[DONE]") return;
+            try {
+                streamError ||= processGenericChatPayload(JSON.parse(payloadText), assistantMessage);
+            } catch (e) {
+                streamError ||= `无法解析模型响应：${e.message}`;
+            }
+        };
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split(/\r?\n\r?\n/);
+            buffer = events.pop();
+            events.forEach(consumeEvent);
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) consumeEvent(buffer);
+        if (streamError) throw new Error(streamError);
+        if (!assistantMessage.content) assistantMessage.content = "模型未返回可显示的文字。";
+        renderGenericChatMessages();
+        status.textContent = "回复完成。";
+    } catch (e) {
+        const index = genericChatMessages.indexOf(assistantMessage);
+        if (index >= 0) genericChatMessages.splice(index, 1);
+        genericChatMessages.push({ role: "error", content: e.message });
+        renderGenericChatMessages();
+        status.textContent = `请求失败：${e.message}`;
+    } finally {
+        genericChatSending = false;
+        composer.disabled = false;
+        sendButton.disabled = false;
+        composer.focus();
+    }
+}
+
+async function initGenericChatPage(pid) {
+    renderGenericChatPage();
+    const composer = document.getElementById("generic-chat-composer");
+    document.getElementById("generic-chat-refresh-models").addEventListener("click", () => loadGenericChatModels(pid));
+    document.getElementById("generic-chat-clear").addEventListener("click", () => {
+        genericChatMessages = [];
+        renderGenericChatMessages();
+    });
+    document.getElementById("generic-chat-send").addEventListener("click", () => sendGenericChatMessage(pid));
+    composer.addEventListener("keydown", event => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            sendGenericChatMessage(pid);
+        }
+    });
+    renderGenericChatMessages();
+    await Promise.all([loadGenericChatServiceInfo(pid), loadGenericChatModels(pid)]);
+}
 
 function asrHistoryRecordsChanged(records) {
     const current = JSON.stringify(asrHistoryRecords);
@@ -1784,7 +2098,7 @@ function openManagedWebUI(pid) {
         window.open("/asr", "_blank");
         return;
     }
-    window.open(`/llama-process/${pid}/`, "_blank");
+    window.open(`/chat/${pid}`, "_blank");
 }
 
 async function stopManagedProcess(pid) {
@@ -2015,6 +2329,11 @@ async function loadDownloadLogs() {
 document.addEventListener("DOMContentLoaded", () => {
     if (window.location.pathname === "/asr" || window.location.pathname === "/asr/") {
         initAsrPage();
+        return;
+    }
+    const genericChatPid = genericChatPathPid();
+    if (genericChatPid !== null) {
+        initGenericChatPage(genericChatPid);
         return;
     }
     initGpuCardsPerRow();

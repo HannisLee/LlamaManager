@@ -113,6 +113,7 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/api/gpus` | 当前 GPU 状态、每卡 util 历史和受管进程列表 |
 | GET | `/api/managed-processes` | 当前运行期已知受管进程和日志记录 |
 | GET | `/asr` | 返回固定地址的 ASR 专用音频转写页 |
+| GET | `/chat/{pid}` | 返回指定标准 LLM 服务的通用 OpenAI 兼容聊天页 |
 | GET | `/api/asr/history` | 返回本地 ASR 历史记录摘要（不含全文） |
 | GET | `/api/asr/history/{record_id}/text` | 读取指定本地 ASR 历史的全文 |
 | GET | `/api/asr/history/{record_id}/extraction` | 读取指定 ASR 历史已保存的信息提取结果 |
@@ -216,7 +217,7 @@ _download_lock   # 下载任务状态读写锁
 - 不传 pid 时读取最新受管进程日志；没有受管进程时回退到 `settings.log_file`
 
 **ASR 专用转写：**
-1. 服务注册时明确选择 ASR 或标准 LLM。ASR 服务的 Open 固定跳转到 `/asr`；标准 LLM 服务的 Open 仍打开原反向代理页
+1. 服务注册时明确选择 ASR 或标准 LLM。ASR 服务的 Open 固定跳转到 `/asr`；标准 LLM 服务的 Open 打开 `/chat/{pid}` 通用聊天页
 2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，并行上传到 `/api/asr/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
 3. 后端自动使用唯一运行中的 ASR 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
@@ -273,7 +274,7 @@ _download_lock   # 下载任务状态读写锁
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
 6. **设置区** — 模型下载目录、GPU 历史小时数，以及 OpenAI 兼容 API 地址、模型名称和密钥。密钥只写入后端本地 settings.json，读取设置时仅返回是否已配置；可测试 `/models` 连接并在页面显示结果、填充模型名称候选项
 
-ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 ASR 实例；标准 LLM 服务的 Open 则打开对应端口的原反向代理页。顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；轮询仅在记录摘要变化时重绘，且会保留页面及展开文字框的滚动位置。仅在点击已完成条目时显示全文，并支持名称修改。原文和已提取操作右侧提供复制按钮，复制当前显示的文字。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
+ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。标准 LLM 服务的 Open 则进入 `/chat/{pid}`；该通用聊天页通过受管服务的反向代理调用 OpenAI 兼容的 `/v1/models` 和 `/v1/chat/completions`，支持模型选择、系统提示词、多轮对话和流式输出，不依赖框架自带 WebUI。ASR 页自动使用唯一运行中的 ASR 实例；顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；轮询仅在记录摘要变化时重绘，且会保留页面及展开文字框的滚动位置。仅在点击已完成条目时显示全文，并支持名称修改。原文和已提取操作右侧提供复制按钮，复制当前显示的文字。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
 
 GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
 - `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`
@@ -319,7 +320,8 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 | `loadManagedProcesses()` | 刷新受管进程并更新启动列表运行状态与日志选择器 |
 | `stopManagedProcess(pid)` | 停止指定受管实例 |
 | `restartManagedProcess(pid)` | 重启指定受管实例 |
-| `openManagedWebUI(pid)` | ASR 服务打开固定转写页，标准 LLM 服务打开原代理页 |
+| `openManagedWebUI(pid)` | ASR 服务打开固定转写页，标准 LLM 服务打开通用聊天页 |
+| `initGenericChatPage(pid)` | 初始化标准 LLM 的通用 OpenAI 兼容聊天页 |
 | `initAsrPage()` | 初始化固定 ASR 页的批量拖放上传、后台任务状态和历史自动刷新 |
 | `loadAsrHistory()` | 加载本地转写历史摘要并渲染可展开列表 |
 | `toggleAsrHistoryItem(id)` | 展开或收起一条历史记录，展开时按需读取全文 |
