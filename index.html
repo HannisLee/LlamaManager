@@ -734,14 +734,14 @@
             <label for="custom-service-name">服务名</label>
             <input type="text" id="custom-service-name" placeholder="留空则从启动命令推断">
 
-            <label>CUDA_VISIBLE_DEVICES</label>
+            <label>GPU</label>
             <div id="start-gpu-list" style="display:flex; gap:10px; flex-wrap:wrap; color:#aaa; font-size:0.9em;">
                 <span style="color:#888;">自动使用全部可见 GPU</span>
             </div>
 
             <label for="custom-service-command">启动命令</label>
             <textarea id="custom-service-command" rows="4" placeholder="例如：python -m vllm.entrypoints.openai.api_server --model /path/to/model --port 8085"></textarea>
-            <div class="full-width asr-hint">启动时会自动以 <code>nohup</code> 后台运行，输出写入独立日志；勾选显卡会在命令前注入 <code>CUDA_VISIBLE_DEVICES</code>。</div>
+            <div class="full-width asr-hint">启动时会自动以 <code>nohup</code> 后台运行，输出写入独立日志；勾选 GPU 后仅向命令暴露所选 GPU。</div>
 
             <div class="full-width btn-group">
                 <button class="btn-primary" id="custom-service-save-btn" onclick="saveService()">保存服务</button>
@@ -1050,7 +1050,7 @@ async function copyAsrHistoryText(recordId) {
     }
 }
 
-async function initAsrPage(pid) {
+async function initAsrPage() {
     renderAsrPage();
     const fileInput = document.getElementById("asr-audio-file");
     const dropZone = document.getElementById("asr-drop-zone");
@@ -1060,7 +1060,7 @@ async function initAsrPage(pid) {
     let selectedFiles = [];
 
     try {
-        const service = await api("GET", `/api/asr/${pid}`);
+        const service = await api("GET", "/api/asr");
         document.getElementById("asr-service-name").textContent = `${service.name} · PID ${service.pid}`;
         status.textContent = `服务已就绪，单片最长 ${Math.round((service.max_chunk_seconds || 600) / 60)} 分钟。`;
     } catch (e) {
@@ -1114,7 +1114,7 @@ async function initAsrPage(pid) {
         status.textContent = `正在上传 ${files.length} 个音频；上传完成后会在下方历史中显示转写状态。`;
         try {
             const outcomes = await Promise.allSettled(files.map(async file => {
-                const response = await fetch(`/api/asr/${pid}/transcriptions`, {
+                const response = await fetch("/api/asr/transcriptions", {
                     method: "POST",
                     headers: {
                         "Content-Type": file.type || "application/octet-stream",
@@ -1204,7 +1204,7 @@ function renderRegisteredServices() {
                ${run.port ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>` : ""}`
             : `<button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}')">启动</button>`;
         const gpuText = Array.isArray(service.gpu_indexes) && service.gpu_indexes.length
-            ? `CUDA_VISIBLE_DEVICES=${service.gpu_indexes.join(",")}` : "使用全部可见 GPU";
+            ? `GPU ${service.gpu_indexes.join(",")}` : "使用全部 GPU";
         return `
         <div class="custom-service-row">
             <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}</strong>
@@ -1416,7 +1416,7 @@ function updateStartGpuList(gpus) {
         Array.from(wrap.querySelectorAll("input[type='checkbox']:checked")).map(input => input.value)
     );
     if (!gpus.length) {
-        wrap.innerHTML = `<span style="color:#888;">未检测到 GPU，不设置 CUDA_VISIBLE_DEVICES</span>`;
+        wrap.innerHTML = `<span style="color:#888;">未检测到 GPU，默认使用全部 GPU</span>`;
         return;
     }
     wrap.innerHTML = gpus.map(gpu => {
@@ -1531,7 +1531,7 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 function openManagedWebUI(pid) {
     const proc = (managedProcessRecords || []).find(item => Number(item.pid) === Number(pid));
     if (isQwen3AsrProcess(proc)) {
-        window.open(`/asr/${pid}`, "_blank");
+        window.open("/asr", "_blank");
         return;
     }
     window.open(`/llama-process/${pid}/`, "_blank");
@@ -1763,9 +1763,8 @@ async function loadDownloadLogs() {
 // ── 初始化 ────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-    const asrMatch = window.location.pathname.match(/^\/asr\/(\d+)\/?$/);
-    if (asrMatch) {
-        initAsrPage(Number(asrMatch[1]));
+    if (window.location.pathname === "/asr" || window.location.pathname === "/asr/") {
+        initAsrPage();
         return;
     }
     initGpuCardsPerRow();

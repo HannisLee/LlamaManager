@@ -25,7 +25,7 @@ import httpx
 import psutil
 import tqdm as _tqdm_module
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 # ── 路径常量 ──────────────────────────────────────────────
 APP_DIR = Path(__file__).resolve().parent
@@ -1502,15 +1502,19 @@ def _is_qwen3_asr_service(item: dict) -> bool:
     return "qwen3-asr-1.7b" in identity
 
 
-def _get_qwen3_asr_item(pid: int) -> dict:
-    """读取仍在运行的 Qwen3-ASR-1.7B 受管实例。"""
+def _get_qwen3_asr_item() -> dict:
+    """读取唯一运行中的 Qwen3-ASR-1.7B 受管实例。"""
     with _process_lock:
         _sync_current_from_managed()
-        item = _managed_processes.get(pid)
-        if item is None or not _is_process_running(item.get("process")):
-            raise HTTPException(status_code=404, detail=f"运行中的受管进程不存在: {pid}")
-        if not _is_qwen3_asr_service(item):
-            raise HTTPException(status_code=400, detail="该服务不是 Qwen3-ASR-1.7B，无法使用音频转写页")
+        matches = [
+            (pid, item) for pid, item in _managed_processes.items()
+            if _is_process_running(item.get("process")) and _is_qwen3_asr_service(item)
+        ]
+        if not matches:
+            raise HTTPException(status_code=404, detail="没有运行中的 Qwen3-ASR-1.7B 服务")
+        if len(matches) > 1:
+            raise HTTPException(status_code=409, detail="检测到多个 Qwen3-ASR-1.7B 服务，请仅保留一个运行实例")
+        pid, item = matches[0]
         return {
             "pid": pid,
             "port": item.get("port"),
@@ -1942,11 +1946,16 @@ async def get_icon():
     return FileResponse(APP_DIR / "icon.png", media_type="image/png")
 
 
-@app.get("/asr/{pid}")
-async def qwen3_asr_page(pid: int):
-    """返回指定 Qwen3-ASR-1.7B 实例的专用转写页。"""
-    _get_qwen3_asr_item(pid)
+@app.get("/asr")
+async def qwen3_asr_page():
+    """返回固定地址的 Qwen3-ASR-1.7B 专用转写页。"""
     return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/asr/{pid}")
+async def redirect_legacy_qwen3_asr_page(pid: int):
+    """兼容旧版带 PID 的 ASR 页面地址。"""
+    return RedirectResponse(url="/asr", status_code=307)
 
 
 @app.get("/api/asr/history")
@@ -1995,10 +2004,10 @@ async def delete_asr_history(record_id: str):
     return JSONResponse({"ok": True, "record": record})
 
 
-@app.get("/api/asr/{pid}")
-async def get_qwen3_asr_info(pid: int):
-    """获取 Qwen3-ASR-1.7B 专用转写页所需的实例信息。"""
-    item = _get_qwen3_asr_item(pid)
+@app.get("/api/asr")
+async def get_qwen3_asr_info():
+    """获取固定 ASR 页面所需的唯一实例信息。"""
+    item = _get_qwen3_asr_item()
     return JSONResponse({
         "ok": True,
         "pid": item["pid"],
@@ -2007,10 +2016,10 @@ async def get_qwen3_asr_info(pid: int):
     })
 
 
-@app.post("/api/asr/{pid}/transcriptions")
-async def transcribe_with_qwen3_asr(pid: int, request: Request):
-    """接收一个音频文件，创建历史记录并在后台排队转写。"""
-    item = _get_qwen3_asr_item(pid)
+@app.post("/api/asr/transcriptions")
+async def transcribe_with_qwen3_asr(request: Request):
+    """接收一个音频文件，创建历史记录并在后台队列转写。"""
+    item = _get_qwen3_asr_item()
     filename = unquote(request.headers.get("x-audio-filename", "audio"))
     filename = Path(filename).name
     suffix = Path(filename).suffix.lower()
