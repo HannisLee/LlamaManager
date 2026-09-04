@@ -464,95 +464,191 @@
 
         /* 通用 OpenAI 兼容聊天页 */
         .generic-chat-page {
-            max-width: 1080px;
-            margin: 0 auto;
-            padding: 32px 20px;
-        }
-        .generic-chat-page h1 {
-            text-align: left;
-            padding: 0 0 16px;
-            margin-bottom: 20px;
-        }
-        .generic-chat-page .card h2 {
-            text-transform: none;
-            letter-spacing: 0;
-            color: #e0e0e0;
-        }
-        .generic-chat-settings {
+            min-height: 100vh;
             display: grid;
-            grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
-            gap: 10px;
+            grid-template-columns: 270px minmax(0, 1fr);
+            background: #fbfbfa;
+            color: #252525;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
-        .generic-chat-input {
+        .generic-chat-sidebar {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            padding: 18px 12px;
+            background: #f4f4f2;
+            border-right: 1px solid #e4e4e0;
+        }
+        .generic-chat-brand {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 4px 9px 18px;
+            font-weight: 700;
+            color: #202020;
+        }
+        .generic-chat-brand img { width: 25px; height: 25px; border-radius: 6px; }
+        .generic-chat-new,
+        .generic-chat-session,
+        .generic-chat-icon-button,
+        .generic-chat-send {
+            border: 0;
+            font: inherit;
+        }
+        .generic-chat-new {
             width: 100%;
-            padding: 9px 10px;
-            background: #0f1629;
-            border: 1px solid #48698f;
-            border-radius: 4px;
-            color: #edf4ff;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #272727;
+            color: #fff;
+            font-size: 0.9em;
+            text-align: left;
+        }
+        .generic-chat-new:hover { background: #111; }
+        .generic-chat-session-list {
+            display: grid;
+            gap: 3px;
+            margin: 16px 0;
+            overflow-y: auto;
+        }
+        .generic-chat-session-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            gap: 2px;
+            align-items: center;
+            border-radius: 9px;
+        }
+        .generic-chat-session-row.active { background: #e6e6e2; }
+        .generic-chat-session {
+            min-width: 0;
+            padding: 9px 8px 9px 10px;
+            background: transparent;
+            color: #4a4a47;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.88em;
+        }
+        .generic-chat-session-row.active .generic-chat-session { color: #171717; font-weight: 600; }
+        .generic-chat-icon-button {
+            width: 28px;
+            height: 28px;
+            display: grid;
+            place-items: center;
+            padding: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #777;
             font-size: 0.95em;
         }
-        .generic-chat-input:focus {
-            outline: none;
-            border-color: #4e9cff;
+        .generic-chat-icon-button:hover { background: #d8d8d4; color: #222; opacity: 1; }
+        .generic-chat-sidebar-footer {
+            margin-top: auto;
+            padding: 10px 8px 0;
+            border-top: 1px solid #e0e0dc;
+            color: #777;
+            font-size: 0.78em;
+        }
+        .generic-chat-sidebar-footer details summary { cursor: pointer; color: #555; }
+        .generic-chat-settings { display: grid; gap: 8px; margin-top: 10px; }
+        .generic-chat-input {
+            width: 100%;
+            padding: 8px 9px;
+            border: 1px solid #d8d8d4;
+            border-radius: 7px;
+            background: #fff;
+            color: #222;
+            font-size: 0.9em;
+        }
+        .generic-chat-input:focus { outline: none; border-color: #91918a; box-shadow: 0 0 0 3px #e5e5e1; }
+        .generic-chat-main { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+        .generic-chat-topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 62px;
+            padding: 12px clamp(20px, 5vw, 72px);
+            border-bottom: 1px solid #eeeeeb;
+            background: rgba(251, 251, 250, 0.9);
+        }
+        .generic-chat-service-name { color: #252525; font-size: 0.94em; font-weight: 650; }
+        .generic-chat-status { color: #858580; font-size: 0.78em; text-align: right; }
+        .generic-chat-conversation {
+            width: min(100%, 900px);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            margin: 0 auto;
+            padding: 28px 28px 16px;
         }
         .generic-chat-messages {
             display: grid;
-            gap: 12px;
-            min-height: 360px;
-            max-height: 58vh;
+            align-content: start;
+            gap: 22px;
+            flex: 1;
             overflow-y: auto;
-            padding: 4px;
+            padding: 8px 4px 26px;
         }
         .generic-chat-empty {
-            color: #8fa1bd;
+            align-self: center;
+            margin: auto 0;
+            color: #767672;
             text-align: center;
-            padding: 80px 20px;
         }
+        .generic-chat-empty strong { display: block; margin-bottom: 5px; color: #222; font-size: 1.8em; letter-spacing: -0.04em; }
         .generic-chat-message {
-            max-width: min(88%, 860px);
-            padding: 12px 14px;
-            border: 1px solid #2f3b52;
-            border-radius: 8px;
+            position: relative;
+            max-width: min(84%, 720px);
+            padding: 13px 15px;
+            border-radius: 14px;
             white-space: pre-wrap;
             word-break: break-word;
+            line-height: 1.65;
+            font-size: 0.96em;
         }
-        .generic-chat-message-user {
-            justify-self: end;
-            background: #173d6b;
-            border-color: #2f6eae;
+        .generic-chat-message-user { justify-self: end; background: #292929; color: #fff; border-bottom-right-radius: 4px; }
+        .generic-chat-message-assistant { justify-self: start; background: #f0f0ed; color: #252525; border-bottom-left-radius: 4px; }
+        .generic-chat-message-error { justify-self: start; color: #8f2635; background: #fff0f1; border: 1px solid #f3d5d9; }
+        .generic-chat-role { display: block; margin-bottom: 4px; color: inherit; opacity: 0.56; font-size: 0.74em; font-weight: 650; }
+        .generic-chat-message-copy {
+            position: absolute;
+            right: 7px;
+            bottom: -28px;
+            padding: 4px 7px;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: #8b8b86;
+            font-size: 0.75em;
+            opacity: 0;
         }
-        .generic-chat-message-assistant {
-            justify-self: start;
-            background: #101b32;
-        }
-        .generic-chat-message-error {
-            justify-self: start;
-            color: #ffb3b3;
-            background: #351c2a;
-            border-color: #8d354f;
-        }
-        .generic-chat-role {
-            display: block;
-            margin-bottom: 5px;
-            color: #8fa1bd;
-            font-size: 0.78em;
-        }
+        .generic-chat-message:hover .generic-chat-message-copy,
+        .generic-chat-message-copy:focus { opacity: 1; }
+        .generic-chat-message-copy:hover { background: #ecece8; color: #333; opacity: 1; }
+        .generic-chat-composer-wrap { position: sticky; bottom: 0; padding-top: 10px; background: linear-gradient(transparent, #fbfbfa 22%); }
         .generic-chat-composer {
             width: 100%;
-            min-height: 92px;
-            padding: 10px;
+            min-height: 110px;
+            padding: 15px 17px 10px;
             resize: vertical;
-            background: #0f1629;
-            border: 1px solid #48698f;
-            border-radius: 4px;
-            color: #edf4ff;
+            border: 1px solid #d8d8d4;
+            border-radius: 18px 18px 8px 18px;
+            background: #fff;
+            color: #252525;
             font: inherit;
             line-height: 1.5;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06), 0 12px 26px rgba(0, 0, 0, 0.035);
         }
-        .generic-chat-composer:focus {
-            outline: none;
-            border-color: #4e9cff;
+        .generic-chat-composer:focus { outline: none; border-color: #999993; box-shadow: 0 0 0 3px #ecece8; }
+        .generic-chat-composer-actions { display: flex; align-items: center; gap: 8px; margin-top: -44px; padding: 0 10px 10px; position: relative; }
+        .generic-chat-model-chip { max-width: calc(100% - 54px); padding: 5px 9px; border-radius: 7px; background: #f2f2f0; color: #565651; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75em; }
+        .generic-chat-send { width: 34px; height: 34px; margin-left: auto; border-radius: 50%; background: #292929; color: #fff; font-size: 1.1em; }
+        .generic-chat-send:hover { background: #111; opacity: 1; }
+        .generic-chat-send:disabled { background: #c5c5c1; }
         }
 
         /* checkbox */
@@ -786,6 +882,29 @@
             .generic-chat-message {
                 max-width: 96%;
             }
+            .generic-chat-page {
+                grid-template-columns: 1fr;
+            }
+            .generic-chat-sidebar {
+                min-height: 0;
+                padding: 10px 12px;
+                border-right: 0;
+                border-bottom: 1px solid #e4e4e0;
+            }
+            .generic-chat-brand,
+            .generic-chat-sidebar-footer { display: none; }
+            .generic-chat-session-list {
+                display: flex;
+                margin: 8px 0 0;
+                overflow-x: auto;
+            }
+            .generic-chat-session-row { flex: 0 0 auto; }
+            .generic-chat-session { max-width: 150px; }
+            .generic-chat-session-row .generic-chat-icon-button { display: none; }
+            .generic-chat-topbar { min-height: 54px; padding: 10px 16px; }
+            .generic-chat-status { display: none; }
+            .generic-chat-conversation { padding: 18px 14px 12px; }
+            .generic-chat-empty strong { font-size: 1.45em; }
             .gpu-wave-grid,
             .gpu-wave-grid.cols-2,
             .gpu-wave-grid.cols-3,
@@ -1052,59 +1171,189 @@ const asrExtractionTextCache = new Map();
 const asrHistoryDisplayModes = new Map();
 let genericChatMessages = [];
 let genericChatSending = false;
+let genericChatPid = null;
+let genericChatSessions = [];
+let genericChatActiveSessionId = "";
 
 function genericChatPathPid() {
     const match = window.location.pathname.match(/^\/chat\/(\d+)\/?$/);
     return match ? Number(match[1]) : null;
 }
 
+function genericChatStorageKey(pid) {
+    return `llama-manager-chat-sessions-${pid}`;
+}
+
+function genericChatSessionTitle(messages) {
+    const firstUserMessage = messages.find(message => message.role === "user" && message.content);
+    if (!firstUserMessage) return "新对话";
+    return firstUserMessage.content.replace(/\s+/g, " ").slice(0, 26) || "新对话";
+}
+
+function saveGenericChatSessions() {
+    const active = genericChatSessions.find(session => session.id === genericChatActiveSessionId);
+    if (active) {
+        active.messages = genericChatMessages;
+        active.updatedAt = Date.now();
+        if (active.title === "新对话" && genericChatMessages.length) active.title = genericChatSessionTitle(genericChatMessages);
+    }
+    genericChatSessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    localStorage.setItem(genericChatStorageKey(genericChatPid), JSON.stringify(genericChatSessions.slice(0, 60)));
+}
+
+function createGenericChatSession() {
+    const session = {
+        id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        title: "新对话",
+        messages: [],
+        updatedAt: Date.now(),
+    };
+    genericChatSessions.unshift(session);
+    genericChatActiveSessionId = session.id;
+    genericChatMessages = session.messages;
+    saveGenericChatSessions();
+    return session;
+}
+
+function loadGenericChatSessions(pid) {
+    genericChatPid = pid;
+    try {
+        const stored = JSON.parse(localStorage.getItem(genericChatStorageKey(pid)) || "[]");
+        genericChatSessions = Array.isArray(stored) ? stored.filter(session => session && Array.isArray(session.messages)) : [];
+    } catch (e) {
+        genericChatSessions = [];
+    }
+    if (!genericChatSessions.length) createGenericChatSession();
+    else {
+        genericChatSessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        genericChatActiveSessionId = genericChatSessions[0].id;
+        genericChatMessages = genericChatSessions[0].messages;
+    }
+}
+
+function renderGenericChatSessions() {
+    const wrap = document.getElementById("generic-chat-session-list");
+    if (!wrap) return;
+    wrap.innerHTML = genericChatSessions.map(session => `
+        <div class="generic-chat-session-row ${session.id === genericChatActiveSessionId ? "active" : ""}">
+            <button class="generic-chat-session" onclick="selectGenericChatSession('${escapeHtml(session.id)}')" title="${escapeHtml(session.title)}">${escapeHtml(session.title)}</button>
+            <button class="generic-chat-icon-button" onclick="renameGenericChatSession('${escapeHtml(session.id)}')" title="重命名对话" aria-label="重命名对话">✎</button>
+            <button class="generic-chat-icon-button" onclick="deleteGenericChatSession('${escapeHtml(session.id)}')" title="删除对话" aria-label="删除对话">×</button>
+        </div>
+    `).join("");
+}
+
+function selectGenericChatSession(sessionId) {
+    const session = genericChatSessions.find(item => item.id === sessionId);
+    if (!session || genericChatSending) return;
+    genericChatActiveSessionId = session.id;
+    genericChatMessages = session.messages;
+    renderGenericChatSessions();
+    renderGenericChatMessages();
+}
+
+function newGenericChatSession() {
+    if (genericChatSending) return;
+    createGenericChatSession();
+    renderGenericChatSessions();
+    renderGenericChatMessages();
+    document.getElementById("generic-chat-composer")?.focus();
+}
+
+function renameGenericChatSession(sessionId) {
+    const session = genericChatSessions.find(item => item.id === sessionId);
+    if (!session) return;
+    const name = window.prompt("对话名称", session.title);
+    if (name === null) return;
+    session.title = name.trim().slice(0, 80) || "新对话";
+    session.updatedAt = Date.now();
+    saveGenericChatSessions();
+    renderGenericChatSessions();
+}
+
+function deleteGenericChatSession(sessionId) {
+    const session = genericChatSessions.find(item => item.id === sessionId);
+    if (!session || !window.confirm(`确认删除“${session.title}”吗？`)) return;
+    genericChatSessions = genericChatSessions.filter(item => item.id !== sessionId);
+    if (!genericChatSessions.length) {
+        createGenericChatSession();
+    } else if (sessionId === genericChatActiveSessionId) {
+        genericChatActiveSessionId = genericChatSessions[0].id;
+        genericChatMessages = genericChatSessions[0].messages;
+    }
+    saveGenericChatSessions();
+    renderGenericChatSessions();
+    renderGenericChatMessages();
+}
+
 function renderGenericChatPage() {
-    document.querySelector(".container").style.display = "none";
     document.title = "通用模型对话 · LlamaManager";
     document.body.insertAdjacentHTML("beforeend", `
         <main class="generic-chat-page">
-            <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> 通用模型对话</h1>
-            <div class="card">
-                <h2 id="generic-chat-service-name">正在连接模型服务...</h2>
-                <div class="generic-chat-settings">
-                    <input id="generic-chat-model" class="generic-chat-input" list="generic-chat-model-list" placeholder="模型名称">
-                    <input id="generic-chat-system-prompt" class="generic-chat-input" placeholder="系统提示词（可选）" value="你是一个乐于助人的 AI 助手。">
+            <aside class="generic-chat-sidebar">
+                <div class="generic-chat-brand"><img src="/icon.png" alt="LlamaManager"> LlamaManager</div>
+                <button class="generic-chat-new" id="generic-chat-new"><span>＋</span> 新建对话</button>
+                <div id="generic-chat-session-list" class="generic-chat-session-list"></div>
+                <div class="generic-chat-sidebar-footer">
+                    <details>
+                        <summary>模型与提示词设置</summary>
+                        <div class="generic-chat-settings">
+                            <input id="generic-chat-model" class="generic-chat-input" list="generic-chat-model-list" placeholder="模型名称">
+                            <input id="generic-chat-system-prompt" class="generic-chat-input" placeholder="系统提示词（可选）" value="你是一个乐于助人的 AI 助手。">
+                            <button class="generic-chat-icon-button" id="generic-chat-refresh-models" title="刷新模型列表" aria-label="刷新模型列表">↻</button>
+                        </div>
+                    </details>
+                    <datalist id="generic-chat-model-list"></datalist>
                 </div>
-                <datalist id="generic-chat-model-list"></datalist>
-                <div class="btn-group">
-                    <button class="btn-secondary" id="generic-chat-refresh-models">刷新模型列表</button>
-                    <button class="btn-secondary" id="generic-chat-clear">清空对话</button>
-                    <button class="btn-secondary" onclick="window.close()">关闭页面</button>
+            </aside>
+            <section class="generic-chat-main">
+                <header class="generic-chat-topbar">
+                    <div id="generic-chat-service-name" class="generic-chat-service-name">正在连接模型服务...</div>
+                    <div id="generic-chat-status" class="generic-chat-status">正在读取服务支持的模型...</div>
+                </header>
+                <div class="generic-chat-conversation">
+                    <div id="generic-chat-messages" class="generic-chat-messages"></div>
+                    <div class="generic-chat-composer-wrap">
+                        <textarea id="generic-chat-composer" class="generic-chat-composer" placeholder="输入消息… 按 Ctrl + Enter 发送"></textarea>
+                        <div class="generic-chat-composer-actions">
+                            <span id="generic-chat-model-chip" class="generic-chat-model-chip">正在选择模型…</span>
+                            <button class="generic-chat-send" id="generic-chat-send" title="发送" aria-label="发送">↑</button>
+                        </div>
+                    </div>
                 </div>
-                <div id="generic-chat-status" class="asr-hint">正在读取服务支持的模型...</div>
-            </div>
-            <div class="card">
-                <h2>对话</h2>
-                <div id="generic-chat-messages" class="generic-chat-messages"></div>
-                <textarea id="generic-chat-composer" class="generic-chat-composer" placeholder="输入消息，按 Ctrl + Enter 发送"></textarea>
-                <div class="btn-group">
-                    <button class="btn-success" id="generic-chat-send">发送</button>
-                    <span class="asr-hint">支持 OpenAI 兼容的 <code>/v1/models</code> 与 <code>/v1/chat/completions</code> 接口。</span>
-                </div>
-            </div>
+            </section>
         </main>
     `);
+    document.querySelector(".container").style.display = "none";
 }
 
 function renderGenericChatMessages() {
     const wrap = document.getElementById("generic-chat-messages");
     if (!wrap) return;
     if (!genericChatMessages.length) {
-        wrap.innerHTML = '<div class="generic-chat-empty">从下方输入消息开始对话。</div>';
+        wrap.innerHTML = '<div class="generic-chat-empty"><strong>你好，有什么想聊的？</strong>输入消息开始与模型对话。</div>';
         return;
     }
     const labels = { user: "你", assistant: "模型", error: "请求失败" };
-    wrap.innerHTML = genericChatMessages.map(message => `
+    wrap.innerHTML = genericChatMessages.map((message, index) => `
         <div class="generic-chat-message generic-chat-message-${message.role}">
             <span class="generic-chat-role">${labels[message.role] || "模型"}</span>${escapeHtml(message.content || "")}
+            <button class="generic-chat-message-copy" onclick="copyGenericChatMessage(${index})">复制</button>
         </div>
     `).join("");
     wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function copyGenericChatMessage(index) {
+    const text = genericChatMessages[index]?.content || "";
+    if (!text) return;
+    const status = document.getElementById("generic-chat-status");
+    try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = "已复制消息";
+    } catch (e) {
+        status.textContent = "复制失败，请手动选择文字复制";
+    }
 }
 
 function genericChatContent(value) {
@@ -1119,6 +1368,7 @@ async function loadGenericChatModels(pid) {
     const modelInput = document.getElementById("generic-chat-model");
     const modelList = document.getElementById("generic-chat-model-list");
     const status = document.getElementById("generic-chat-status");
+    const modelChip = document.getElementById("generic-chat-model-chip");
     status.textContent = "正在读取服务支持的模型...";
     try {
         const response = await fetch(`/llama-process/${pid}/v1/models`);
@@ -1127,10 +1377,12 @@ async function loadGenericChatModels(pid) {
         const models = (Array.isArray(data.data) ? data.data : []).map(item => item.id || item.model || item.name).filter(Boolean);
         modelList.innerHTML = models.map(model => `<option value="${escapeHtml(model)}"></option>`).join("");
         if (!modelInput.value && models.length) modelInput.value = models[0];
+        modelChip.textContent = modelInput.value || "手动输入模型名称";
         status.textContent = models.length
             ? `已读取 ${models.length} 个模型。也可手动输入服务支持的模型名称。`
             : "服务未返回模型列表，请手动输入模型名称。";
     } catch (e) {
+        modelChip.textContent = modelInput.value || "手动输入模型名称";
         status.textContent = `无法读取模型列表：${e.message}。可手动输入模型名称后尝试发送。`;
     }
 }
@@ -1271,6 +1523,8 @@ async function sendGenericChatMessage(pid) {
     genericChatMessages.push({ role: "user", content });
     const assistantMessage = { role: "assistant", content: "" };
     genericChatMessages.push(assistantMessage);
+    saveGenericChatSessions();
+    renderGenericChatSessions();
     renderGenericChatMessages();
     status.textContent = "模型正在生成回复...";
     try {
@@ -1285,12 +1539,16 @@ async function sendGenericChatMessage(pid) {
         }
         if (requestError) throw new Error(requestError);
         if (!assistantMessage.content) assistantMessage.content = "模型未返回可显示的文字。";
+        saveGenericChatSessions();
+        renderGenericChatSessions();
         renderGenericChatMessages();
         status.textContent = "回复完成。";
     } catch (e) {
         const index = genericChatMessages.indexOf(assistantMessage);
         if (index >= 0) genericChatMessages.splice(index, 1);
         genericChatMessages.push({ role: "error", content: e.message });
+        saveGenericChatSessions();
+        renderGenericChatSessions();
         renderGenericChatMessages();
         status.textContent = `请求失败：${e.message}`;
     } finally {
@@ -1302,12 +1560,14 @@ async function sendGenericChatMessage(pid) {
 }
 
 async function initGenericChatPage(pid) {
+    loadGenericChatSessions(pid);
     renderGenericChatPage();
     const composer = document.getElementById("generic-chat-composer");
+    const modelInput = document.getElementById("generic-chat-model");
+    document.getElementById("generic-chat-new").addEventListener("click", newGenericChatSession);
     document.getElementById("generic-chat-refresh-models").addEventListener("click", () => loadGenericChatModels(pid));
-    document.getElementById("generic-chat-clear").addEventListener("click", () => {
-        genericChatMessages = [];
-        renderGenericChatMessages();
+    modelInput.addEventListener("input", () => {
+        document.getElementById("generic-chat-model-chip").textContent = modelInput.value.trim() || "手动输入模型名称";
     });
     document.getElementById("generic-chat-send").addEventListener("click", () => sendGenericChatMessage(pid));
     composer.addEventListener("keydown", event => {
@@ -1316,6 +1576,7 @@ async function initGenericChatPage(pid) {
             sendGenericChatMessage(pid);
         }
     });
+    renderGenericChatSessions();
     renderGenericChatMessages();
     await Promise.all([loadGenericChatServiceInfo(pid), loadGenericChatModels(pid)]);
 }
