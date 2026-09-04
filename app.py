@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import httpx
 import psutil
@@ -39,6 +39,8 @@ MODEL_PARAMS_KEY = "model_params"
 GPU_HISTORY_KEY = "gpu_history"
 CUSTOM_SERVICES_KEY = "custom_services"
 MANAGED_PROCESS_RECORDS_KEY = "managed_processes"
+OPENAI_API_BASE_URL_KEY = "openai_api_base_url"
+OPENAI_API_KEY_KEY = "openai_api_key"
 INTERNAL_SETTINGS_KEYS = {
     MODEL_PARAMS_KEY,
     GPU_HISTORY_KEY,
@@ -147,10 +149,12 @@ def _load_public_settings() -> dict:
         "llama_server_path", "host", "port", "extra_args", "log_file",
         "auto_kill_port", "protected_ports",
     }
-    return {
+    public_settings = {
         key: value for key, value in settings.items()
-        if key not in INTERNAL_SETTINGS_KEYS | legacy_keys
+        if key not in INTERNAL_SETTINGS_KEYS | legacy_keys | {OPENAI_API_KEY_KEY}
     }
+    public_settings["openai_api_key_configured"] = bool(settings.get(OPENAI_API_KEY_KEY))
+    return public_settings
 
 
 def _write_settings_raw(data: dict):
@@ -178,6 +182,20 @@ def _save_settings(data: dict) -> dict:
             "model_dir": str(data.get("model_dir") or "").strip(),
             "gpu_history_hours": data.get("gpu_history_hours", 2),
         })
+        if OPENAI_API_BASE_URL_KEY in data:
+            api_base_url = str(data.get(OPENAI_API_BASE_URL_KEY) or "").strip().rstrip("/")
+            if api_base_url:
+                parsed_url = urlparse(api_base_url)
+                if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                    raise ValueError("OpenAI 兼容 API 地址必须是有效的 http 或 https 地址")
+            existing[OPENAI_API_BASE_URL_KEY] = api_base_url
+
+        if data.get("clear_openai_api_key"):
+            existing.pop(OPENAI_API_KEY_KEY, None)
+        else:
+            api_key = data.get(OPENAI_API_KEY_KEY)
+            if isinstance(api_key, str) and api_key.strip():
+                existing[OPENAI_API_KEY_KEY] = api_key.strip()
         # 新版服务由每条启动命令自包含，不再保留 llama.cpp 单实例配置。
         for key in (
             "llama_server_path", "host", "port", "extra_args", "log_file",
@@ -2100,8 +2118,42 @@ async def save_settings(data: dict):
     try:
         saved = _save_settings(data)
         return JSONResponse({"ok": True, "data": saved})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/openai/test")
+async def test_openai_compatible_api():
+    """使用已保存的密钥测试 OpenAI 兼容 API 的模型列表接口。"""
+    settings = _load_settings_raw()
+    base_url = str(settings.get(OPENAI_API_BASE_URL_KEY) or "").strip().rstrip("/")
+    api_key = str(settings.get(OPENAI_API_KEY_KEY) or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="请先保存 OpenAI 兼容 API 地址")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = await client.get(f"{base_url}/models", headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"连接失败：{str(exc)[:300]}") from exc
+
+    if response.is_error:
+        raise HTTPException(status_code=502, detail=f"服务返回 HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError:
+        return JSONResponse({"ok": True, "message": f"连接成功（HTTP {response.status_code}）"})
+
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(models, list):
+        model_names = [str(item.get("id") or "") for item in models if isinstance(item, dict)]
+        model_names = [name for name in model_names if name]
+        suffix = f"：{', '.join(model_names[:3])}" if model_names else ""
+        return JSONResponse({"ok": True, "message": f"连接成功，获取到 {len(models)} 个模型{suffix}"})
+    return JSONResponse({"ok": True, "message": f"连接成功（HTTP {response.status_code}）"})
 
 
 @app.get("/api/detect-llama-cpp")

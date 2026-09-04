@@ -839,9 +839,20 @@
             <input type="text" id="set-model-dir" placeholder="/path/to/gguf">
             <label for="set-gpu-history-hours">GPU 历史小时数</label>
             <input type="number" id="set-gpu-history-hours" min="0.25" max="168" step="0.25" value="2">
+            <div class="full-width" style="border-top:1px solid #2f3b52; margin-top:6px; padding-top:14px; color:#aaa;">OpenAI 兼容 API</div>
+            <label for="set-openai-api-base-url">API 地址</label>
+            <input type="url" id="set-openai-api-base-url" placeholder="https://api.openai.com/v1">
+            <label for="set-openai-api-key">API 密钥</label>
+            <input type="password" id="set-openai-api-key" autocomplete="new-password" placeholder="留空则不修改已保存的密钥">
+            <div class="full-width checkbox-row">
+                <input type="checkbox" id="set-clear-openai-api-key">
+                <label for="set-clear-openai-api-key">清除已保存的 API 密钥</label>
+            </div>
         </div>
         <div class="btn-group" style="margin-top:12px">
             <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+            <button class="btn-secondary" id="openai-api-test-btn" onclick="testOpenAiApi()">测试连接</button>
+            <span id="openai-api-status" style="color:#888; font-size:0.85em;"></span>
         </div>
     </div>
 </div>
@@ -1190,6 +1201,15 @@ async function loadSettings() {
     currentSettings = await api("GET", "/api/settings");
     document.getElementById("set-model-dir").value = currentSettings.model_dir || "";
     document.getElementById("set-gpu-history-hours").value = currentSettings.gpu_history_hours || 2;
+    document.getElementById("set-openai-api-base-url").value = currentSettings.openai_api_base_url || "";
+    document.getElementById("set-openai-api-key").value = "";
+    document.getElementById("set-openai-api-key").placeholder = currentSettings.openai_api_key_configured
+        ? "已保存，留空则不修改"
+        : "留空则不使用密钥";
+    document.getElementById("set-clear-openai-api-key").checked = false;
+    document.getElementById("openai-api-status").textContent = currentSettings.openai_api_key_configured
+        ? "密钥已保存（不会返回到浏览器）"
+        : "尚未保存密钥";
     return currentSettings;
 }
 
@@ -1197,10 +1217,37 @@ async function saveSettings() {
     const data = {
         model_dir: document.getElementById("set-model-dir").value,
         gpu_history_hours: parseFloat(document.getElementById("set-gpu-history-hours").value) || 2,
+        openai_api_base_url: document.getElementById("set-openai-api-base-url").value.trim(),
+        openai_api_key: document.getElementById("set-openai-api-key").value,
+        clear_openai_api_key: document.getElementById("set-clear-openai-api-key").checked,
     };
-    await api("POST", "/api/settings", data);
+    const saved = await api("POST", "/api/settings", data);
+    currentSettings = saved.data || currentSettings;
+    document.getElementById("set-openai-api-key").value = "";
+    document.getElementById("set-clear-openai-api-key").checked = false;
+    document.getElementById("set-openai-api-key").placeholder = currentSettings.openai_api_key_configured
+        ? "已保存，留空则不修改"
+        : "留空则不使用密钥";
+    document.getElementById("openai-api-status").textContent = currentSettings.openai_api_key_configured
+        ? "密钥已保存（不会返回到浏览器）"
+        : "尚未保存密钥";
     loadGpuStatus();
     alert("设置已保存");
+}
+
+async function testOpenAiApi() {
+    const button = document.getElementById("openai-api-test-btn");
+    const status = document.getElementById("openai-api-status");
+    button.disabled = true;
+    status.textContent = "正在测试连接...";
+    try {
+        const result = await api("POST", "/api/openai/test");
+        status.textContent = result.message || "连接成功";
+    } catch (e) {
+        status.textContent = `测试失败：${e.message}`;
+    } finally {
+        button.disabled = false;
+    }
 }
 
 function resetServiceForm() {
