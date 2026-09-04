@@ -1216,7 +1216,7 @@ function renderRegisteredServices() {
         const launchActions = run
             ? `<button class="btn-danger" onclick="stopManagedProcess(${Number(run.pid)})">停止</button>
                <button class="btn-warning" onclick="restartManagedProcess(${Number(run.pid)})">重启</button>
-               ${(service.service_category === "asr" || run.port) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>` : ""}`
+               ${(service.service_category === "asr" || (run.port && Array.isArray(run.gpu_indexes) && run.gpu_indexes.length === 1)) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>` : ""}`
             : `<button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}')">启动</button>`;
         const gpuText = Array.isArray(service.gpu_indexes) && service.gpu_indexes.length
             ? `GPU ${service.gpu_indexes.join(",")}` : "使用全部 GPU";
@@ -1406,7 +1406,7 @@ function updateGpuUI(data) {
     }
 
     tbody.innerHTML = managedProcesses.map(proc => {
-        const openAction = (isAsrProcess(proc) || proc.port) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>` : "";
+        const openAction = (isAsrProcess(proc) || (proc.port && Array.isArray(proc.gpu_indexes) && proc.gpu_indexes.length === 1)) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>` : "";
         return `
         <tr>
             <td>${escapeHtml(proc.gpu ?? "-")}</td>
@@ -1551,7 +1551,12 @@ function openManagedWebUI(pid) {
         window.open("/asr", "_blank");
         return;
     }
-    window.open(`/llama-process/${pid}/`, "_blank");
+    const gpuIndexes = Array.isArray(proc?.gpu_indexes) ? proc.gpu_indexes : [];
+    if (gpuIndexes.length !== 1) {
+        showError("标准 LLM 必须选择唯一一张 GPU 后才能使用固定代理地址");
+        return;
+    }
+    window.open(`/${gpuIndexes[0]}/`, "_blank");
 }
 
 async function stopManagedProcess(pid) {
