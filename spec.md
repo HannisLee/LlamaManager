@@ -128,7 +128,6 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/api/download/logs?task_id=<id>` | 读取指定下载任务日志尾部 100 行；不传时读取最新任务 |
 | POST | `/api/download/cancel` | 标记取消指定下载任务（`task_id`） |
 | GET/POST/... | `/llama-process/{pid}/{path}` | 反向代理到指定受管 llama-server |
-| GET/POST/... | `/{gpu_index}/{path}` | 反向代理到指定 GPU 上唯一运行中的标准 LLM 服务 |
 | GET/POST/... | `/llama/{path}` | 反向代理到 llama-server |
 
 ### `/api/gpus` 返回结构
@@ -198,7 +197,7 @@ _download_lock   # 下载任务状态读写锁
 3. 勾选 GPU 时，进程环境注入 `CUDA_VISIBLE_DEVICES=<索引列表>`；未勾选则沿用系统可见 GPU
 4. 不再自动清理占用端口、不再有增量启动开关，也不要求命令包含端口；端口冲突由服务自身写入日志报告
 5. 写入 `_managed_processes[pid]` 和 `settings.json.managed_processes`，记录 `service_id` 与 `process_create_time`，支持后台重启后恢复管理
-6. 「已注册服务」列表按 service_id 匹配受管进程：未运行显示「启动」，运行中提供停止/重启。ASR 始终打开 `/asr`；标准 LLM 仅在选择了唯一 GPU 且命令识别到端口时显示 Open，固定打开 `/{gpu_index}/`
+6. 「已注册服务」列表按 service_id 匹配受管进程：未运行显示「启动」，运行中提供停止/重启；只有命令识别到端口时才显示 Open
 
 **后台重启后的受管进程恢复：**
 - 每次启动、停止、状态同步时，后端将受管进程元数据写入 `settings.json.managed_processes`
@@ -268,7 +267,7 @@ _download_lock   # 下载任务状态读写锁
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
 6. **设置区** — 模型下载目录、GPU 历史小时数与 Save 按钮
 
-ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 ASR 实例；标准 LLM 服务按其唯一 GPU 暴露，例如 GPU 0 对应 `/0/`，GPU 1 对应 `/1/`，该地址会代理到相应服务端口。一个 GPU 上存在多个标准 LLM、服务未选择 GPU 或未运行时，接口返回明确错误而不猜测目标。顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
+ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 ASR 实例；标准 LLM 服务的 Open 则打开对应端口的原反向代理页。顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
 
 GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
 - `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`

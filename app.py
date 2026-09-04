@@ -1086,7 +1086,6 @@ def _managed_process_snapshot() -> dict[int, dict]:
                 "display_name": display_name,
                 "service_kind": item.get("service_kind", "command"),
                 "service_type": item.get("service_type", "command"),
-                "service_category": item.get("service_category"),
                 "service_id": item.get("service_id"),
                 "host": item["host"],
                 "port": item["port"],
@@ -1544,32 +1543,6 @@ def _get_asr_service_item() -> dict:
             "display_name": item.get("display_name") or "Qwen3-ASR-1.7B",
             "command": list(item.get("command") or []),
         }
-
-
-def _get_llm_service_item_for_gpu(gpu_index: int) -> tuple[int, dict]:
-    """读取指定 GPU 上唯一运行中的标准 LLM 服务。"""
-    with _process_lock:
-        _sync_current_from_managed()
-        matches = [
-            (pid, item) for pid, item in _managed_processes.items()
-            if (
-                _is_process_running(item.get("process"))
-                and not _is_asr_service(item)
-                and item.get("port")
-                and gpu_index in (item.get("gpu_indexes") or [])
-            )
-        ]
-        if not matches:
-            raise HTTPException(
-                status_code=404,
-                detail=f"GPU {gpu_index} 没有运行中的标准 LLM 服务；请为服务选择该 GPU 后重启服务",
-            )
-        if len(matches) > 1:
-            raise HTTPException(
-                status_code=409,
-                detail=f"GPU {gpu_index} 存在多个标准 LLM 服务，无法确定代理目标",
-            )
-        return matches[0]
 
 
 def _qwen3_asr_model_from_command(command: list) -> str:
@@ -2819,20 +2792,6 @@ async def proxy_to_managed_llama(pid: int, request: Request, path: str = ""):
         return await _proxy_request_to_base(base_url, path, request)
     except httpx.ConnectError:
         raise HTTPException(status_code=503, detail="llama-server 未运行或无法连接")
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
-
-
-@app.api_route("/{gpu_index:int}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.api_route("/{gpu_index:int}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_to_gpu_llm(gpu_index: int, request: Request, path: str = ""):
-    """按 GPU 编号反向代理到唯一的标准 LLM 服务。"""
-    _, item = _get_llm_service_item_for_gpu(gpu_index)
-    base_url = f"http://127.0.0.1:{item['port']}"
-    try:
-        return await _proxy_request_to_base(base_url, path, request)
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail=f"GPU {gpu_index} 的标准 LLM 服务未运行或无法连接")
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
 
