@@ -1150,6 +1150,15 @@ async function loadGenericChatServiceInfo(pid) {
 
 function processGenericChatPayload(payload, assistantMessage) {
     if (payload?.error) return payload.error.message || payload.error.detail || "模型服务返回错误";
+    if (payload?.detail) return payload.detail;
+    if (payload?.content !== undefined) {
+        const content = genericChatContent(payload.content);
+        if (content) {
+            assistantMessage.content += content;
+            renderGenericChatMessages();
+        }
+        return "";
+    }
     const choice = payload?.choices?.[0];
     if (!choice) return "";
     const delta = choice.delta || choice.message || {};
@@ -1159,6 +1168,84 @@ function processGenericChatPayload(payload, assistantMessage) {
     if (content) assistantMessage.content += content;
     if (reasoning || content) renderGenericChatMessages();
     return "";
+}
+
+async function genericChatResponseError(response, fallback) {
+    const data = await response.json().catch(() => ({}));
+    return data.detail || data.error?.message || data.error || fallback;
+}
+
+async function readGenericChatStream(response, assistantMessage) {
+    if (!response.ok) return genericChatResponseError(response, "模型请求失败");
+    if (!response.body) return "浏览器不支持流式响应";
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamError = "";
+    const consumeEvent = eventText => {
+        const dataText = eventText.split("\n")
+            .filter(line => line.startsWith("data:"))
+            .map(line => line.slice(5).trim())
+            .join("\n");
+        const payloadText = dataText || eventText.trim();
+        if (!payloadText || payloadText === "[DONE]") return;
+        try {
+            streamError ||= processGenericChatPayload(JSON.parse(payloadText), assistantMessage);
+        } catch (e) {
+            streamError ||= `无法解析模型响应：${e.message}`;
+        }
+    };
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop();
+        events.forEach(consumeEvent);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeEvent(buffer);
+    return streamError;
+}
+
+async function requestGenericOpenAiChat(pid, model, messages, assistantMessage) {
+    const response = await fetch(`/llama-process/${pid}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+        body: JSON.stringify({ model, messages, stream: true }),
+    });
+    return readGenericChatStream(response, assistantMessage);
+}
+
+function genericLlamaCompletionPrompt(messages) {
+    return messages.map(message => {
+        const label = { system: "系统", user: "用户", assistant: "助手" }[message.role] || message.role;
+        return `${label}：${message.content}`;
+    }).join("\n\n") + "\n\n助手：";
+}
+
+async function requestGenericLlamaCompletion(pid, messages, assistantMessage) {
+    let prompt = genericLlamaCompletionPrompt(messages);
+    try {
+        const templateResponse = await fetch(`/llama-process/${pid}/apply-template`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages, add_generation_prompt: true }),
+        });
+        if (templateResponse.ok) {
+            const templateData = await templateResponse.json();
+            if (templateData.prompt) prompt = templateData.prompt;
+        }
+    } catch (e) {
+        // 部分旧版 llama.cpp 不提供模板接口，继续使用通用提示词。
+    }
+    const response = await fetch(`/llama-process/${pid}/completion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+        body: JSON.stringify({ prompt, n_predict: -1, stream: true }),
+    });
+    return readGenericChatStream(response, assistantMessage);
 }
 
 async function sendGenericChatMessage(pid) {
@@ -1191,45 +1278,12 @@ async function sendGenericChatMessage(pid) {
             .filter(message => message.role === "user" || message.role === "assistant")
             .filter(message => message !== assistantMessage);
         if (systemPrompt.value.trim()) messages.unshift({ role: "system", content: systemPrompt.value.trim() });
-        const response = await fetch(`/llama-process/${pid}/v1/chat/completions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
-            body: JSON.stringify({ model, messages, stream: true }),
-        });
-        if (!response.ok) {
-            const data = await response.json().catch(() => ({}));
-            throw new Error(data.detail || data.error?.message || "模型请求失败");
+        let requestError = await requestGenericOpenAiChat(pid, model, messages, assistantMessage);
+        if (requestError && !assistantMessage.content) {
+            status.textContent = "正在改用 llama.cpp 原生接口生成回复...";
+            requestError = await requestGenericLlamaCompletion(pid, messages, assistantMessage);
         }
-        if (!response.body) throw new Error("浏览器不支持流式响应");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let streamError = "";
-        const consumeEvent = eventText => {
-            const dataText = eventText.split("\n")
-                .filter(line => line.startsWith("data:"))
-                .map(line => line.slice(5).trim())
-                .join("\n");
-            const payloadText = dataText || eventText.trim();
-            if (!payloadText || payloadText === "[DONE]") return;
-            try {
-                streamError ||= processGenericChatPayload(JSON.parse(payloadText), assistantMessage);
-            } catch (e) {
-                streamError ||= `无法解析模型响应：${e.message}`;
-            }
-        };
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split(/\r?\n\r?\n/);
-            buffer = events.pop();
-            events.forEach(consumeEvent);
-        }
-        buffer += decoder.decode();
-        if (buffer.trim()) consumeEvent(buffer);
-        if (streamError) throw new Error(streamError);
+        if (requestError) throw new Error(requestError);
         if (!assistantMessage.content) assistantMessage.content = "模型未返回可显示的文字。";
         renderGenericChatMessages();
         status.textContent = "回复完成。";

@@ -2927,25 +2927,33 @@ async def _proxy_request_to_base(base_url: str, path: str, request: Request):
     need_stream = "text/event-stream" in accept
 
     if need_stream:
-        async def stream_response():
-            async with httpx.AsyncClient(
-                base_url=base_url,
-                timeout=httpx.Timeout(300.0, connect=5.0),
-            ) as client:
-                async with client.stream(
-                    method=request.method,
-                    url=f"/{path}",
-                    headers=headers,
-                    content=body if body else None,
-                    params=request.query_params,
-                ) as resp:
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
+        client = httpx.AsyncClient(
+            base_url=base_url,
+            timeout=httpx.Timeout(300.0, connect=5.0),
+        )
+        upstream_request = client.build_request(
+            method=request.method,
+            url=f"/{path}",
+            headers=headers,
+            content=body if body else None,
+            params=request.query_params,
+        )
+        upstream_response = await client.send(upstream_request, stream=True)
 
+        async def stream_response():
+            try:
+                async for chunk in upstream_response.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream_response.aclose()
+                await client.aclose()
+
+        excluded = {"content-length", "content-encoding", "transfer-encoding", "content-type"}
         return StreamingResponse(
             stream_response(),
-            status_code=200,
-            media_type="text/event-stream",
+            status_code=upstream_response.status_code,
+            media_type=upstream_response.headers.get("content-type", "text/event-stream"),
+            headers={k: v for k, v in upstream_response.headers.items() if k.lower() not in excluded},
         )
 
     async with httpx.AsyncClient(
