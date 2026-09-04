@@ -72,6 +72,7 @@ ASR_MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
 ASR_MAX_CHUNK_SECONDS = 600
 ASR_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
 ASR_MIN_CHUNK_SECONDS = 15
+SERVICE_CATEGORIES = {"asr", "llm"}
 ASR_ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
 }
@@ -522,6 +523,7 @@ def _record_from_item(pid: int, item: dict, running: bool = True) -> dict:
         "display_name": display_name,
         "service_kind": item.get("service_kind", "command"),
         "service_type": item.get("service_type", "command"),
+        "service_category": item.get("service_category", "llm"),
         "service_id": item.get("service_id"),
         "host": item.get("host"),
         "port": item.get("port"),
@@ -565,6 +567,7 @@ def _restore_managed_process_records():
                     "display_name": record.get("display_name") or record.get("model_name"),
                     "service_kind": record.get("service_kind", "command"),
                     "service_type": record.get("service_type", "command"),
+                    "service_category": record.get("service_category"),
                     "service_id": record.get("service_id"),
                     "host": record.get("host", "0.0.0.0"),
                     "port": record.get("port"),
@@ -673,6 +676,14 @@ def _infer_custom_service_name(tokens: list, command: str) -> str:
     return Path(tokens[0]).name if tokens else command[:32]
 
 
+def _infer_service_category(raw: dict) -> str:
+    """从旧服务的名称、模型和命令中推断服务类别。"""
+    identity = " ".join(str(raw.get(key) or "") for key in (
+        "name", "model", "command", "display_name", "model_name",
+    )).lower()
+    return "asr" if "asr" in identity else "llm"
+
+
 def _normalize_custom_service(raw: dict) -> dict:
     """校验并标准化通用本地服务注册数据。"""
     service_id = str(raw.get("id") or f"svc_{uuid.uuid4().hex[:12]}")
@@ -691,10 +702,16 @@ def _normalize_custom_service(raw: dict) -> dict:
             pass
     if not name:
         name = _infer_custom_service_name(tokens, command)
+    service_category = str(raw.get("service_category") or "").strip().lower()
+    if not service_category:
+        service_category = _infer_service_category(raw)
+    if service_category not in SERVICE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="服务类型只能是 ASR 或标准 LLM")
     return {
         "id": service_id,
         "name": name,
         "service_type": "command",
+        "service_category": service_category,
         "model": None,
         "port": port,
         "gpu_indexes": _parse_gpu_indexes(raw.get("gpu_indexes", [])),
@@ -1494,26 +1511,31 @@ def _stop_process_internal(pid: Optional[int] = None, clear_log: bool = True) ->
 
 # ── Qwen3 ASR 音频转写 ────────────────────────────────────
 
-def _is_qwen3_asr_service(item: dict) -> bool:
-    """判断受管实例是否为 Qwen3-ASR-1.7B 命令服务。"""
-    identity = " ".join(str(item.get(key) or "") for key in (
-        "display_name", "model_name", "model", "command",
-    )).lower()
-    return "qwen3-asr-1.7b" in identity
+def _is_asr_service(item: dict) -> bool:
+    """判断受管实例是否为 ASR 服务，兼容未迁移的旧进程记录。"""
+    category = str(item.get("service_category") or "").lower()
+    if category in SERVICE_CATEGORIES:
+        return category == "asr"
+    service_id = item.get("service_id")
+    if service_id:
+        service = _load_custom_services().get(service_id)
+        if isinstance(service, dict):
+            return service.get("service_category") == "asr"
+    return _infer_service_category(item) == "asr"
 
 
-def _get_qwen3_asr_item() -> dict:
-    """读取唯一运行中的 Qwen3-ASR-1.7B 受管实例。"""
+def _get_asr_service_item() -> dict:
+    """读取唯一运行中的 ASR 受管实例。"""
     with _process_lock:
         _sync_current_from_managed()
         matches = [
             (pid, item) for pid, item in _managed_processes.items()
-            if _is_process_running(item.get("process")) and _is_qwen3_asr_service(item)
+            if _is_process_running(item.get("process")) and _is_asr_service(item)
         ]
         if not matches:
-            raise HTTPException(status_code=404, detail="没有运行中的 Qwen3-ASR-1.7B 服务")
+            raise HTTPException(status_code=404, detail="没有运行中的 ASR 服务")
         if len(matches) > 1:
-            raise HTTPException(status_code=409, detail="检测到多个 Qwen3-ASR-1.7B 服务，请仅保留一个运行实例")
+            raise HTTPException(status_code=409, detail="检测到多个 ASR 服务，请仅保留一个运行实例")
         pid, item = matches[0]
         return {
             "pid": pid,
@@ -1948,7 +1970,7 @@ async def get_icon():
 
 @app.get("/asr")
 async def qwen3_asr_page():
-    """返回固定地址的 Qwen3-ASR-1.7B 专用转写页。"""
+    """返回固定地址的 ASR 专用转写页。"""
     return FileResponse(APP_DIR / "index.html")
 
 
@@ -2007,7 +2029,7 @@ async def delete_asr_history(record_id: str):
 @app.get("/api/asr")
 async def get_qwen3_asr_info():
     """获取固定 ASR 页面所需的唯一实例信息。"""
-    item = _get_qwen3_asr_item()
+    item = _get_asr_service_item()
     return JSONResponse({
         "ok": True,
         "pid": item["pid"],
@@ -2019,7 +2041,7 @@ async def get_qwen3_asr_info():
 @app.post("/api/asr/transcriptions")
 async def transcribe_with_qwen3_asr(request: Request):
     """接收一个音频文件，创建历史记录并在后台队列转写。"""
-    item = _get_qwen3_asr_item()
+    item = _get_asr_service_item()
     filename = unquote(request.headers.get("x-audio-filename", "audio"))
     filename = Path(filename).name
     suffix = Path(filename).suffix.lower()
@@ -2243,6 +2265,7 @@ async def start_server(body: dict = None):
 
         display_name = custom_service["name"]
         service_type = "command"
+        service_category = custom_service.get("service_category", "llm")
         # nohup 负责脱离终端，Popen 的 stdout/stderr 重定向确保所有输出进入独立日志文件。
         cmd = ["nohup", "bash", "-lc", _prepare_service_command(command)]
         model_for_record = f"command:{custom_service['id']}"
@@ -2276,6 +2299,7 @@ async def start_server(body: dict = None):
             "display_name": display_name,
             "service_kind": "command",
             "service_type": service_type,
+            "service_category": service_category,
             "service_id": service_id,
             "host": host,
             "port": port,
@@ -2303,6 +2327,7 @@ async def start_server(body: dict = None):
         "command": shlex.join(cmd),
         "service_kind": "command",
         "service_type": service_type,
+        "service_category": service_category,
         "display_name": display_name,
         "log_file": str(log_path),
         "gpu_indexes": gpu_indexes,

@@ -106,17 +106,17 @@ _download_lock   # 下载任务状态读写锁
 | GET | `/api/models` | 递归扫描 model_dir 下 .gguf 文件 |
 | GET | `/api/model-repositories` | 扫描 model_dir 下全量下载的仓库目录 |
 | GET | `/api/custom-services` | 读取已注册的通用命令服务列表 |
-| POST | `/api/custom-services` | 注册或更新服务（服务名、完整启动命令、GPU 选择） |
+| POST | `/api/custom-services` | 注册或更新服务（服务名、服务类型、完整启动命令、GPU 选择） |
 | DELETE | `/api/custom-services/{service_id}` | 删除已注册服务 |
 | GET | `/api/status` | 当前 llama-server 进程状态 |
 | GET | `/api/gpus` | 当前 GPU 状态、每卡 util 历史和受管进程列表 |
 | GET | `/api/managed-processes` | 当前运行期已知受管进程和日志记录 |
-| GET | `/asr` | 返回固定地址的 Qwen3-ASR-1.7B 专用音频转写页 |
+| GET | `/asr` | 返回固定地址的 ASR 专用音频转写页 |
 | GET | `/api/asr/history` | 返回本地 ASR 历史记录摘要（不含全文） |
 | GET | `/api/asr/history/{record_id}/text` | 读取指定本地 ASR 历史的全文 |
 | PATCH | `/api/asr/history/{record_id}` | 修改指定 ASR 历史记录的自定义名称 |
 | DELETE | `/api/asr/history/{record_id}` | 删除已结束的 ASR 历史记录及其保存的全文 |
-| GET | `/api/asr` | 获取唯一运行中的 Qwen3-ASR-1.7B 实例信息 |
+| GET | `/api/asr` | 获取唯一运行中的 ASR 实例信息 |
 | POST | `/api/asr/transcriptions` | 上传一个音频，创建历史 item 并在后台队列中转写，立即返回 `202` |
 | POST | `/api/start` | 启动已注册服务（model 为 `custom:<id>` 启 vLLM，或 `llama:<id>` 启 llama.cpp） |
 | POST | `/api/stop` | 停止指定 PID 或全部受管实例 |
@@ -183,10 +183,10 @@ _download_lock   # 下载任务状态读写锁
 
 **统一服务管理（注册 + 启动）：**
 
-所有本地模型服务统一在「服务管理」卡片中，先注册后启动。每个服务保存完整终端启动命令及可选的 GPU 选择，配置保存在 `settings.json.custom_services`。
+所有本地模型服务统一在「服务管理」卡片中，先注册后启动。每个服务保存服务类型（`asr` 或 `llm`）、完整终端启动命令及可选的 GPU 选择，配置保存在 `settings.json.custom_services`。
 
 **注册服务：**
-1. 注册表单只包含服务名、完整启动命令和 GPU 选择；服务名留空时从 `--model` 等参数推断
+1. 注册表单只包含服务名、服务类型（ASR / 标准 LLM）、完整启动命令和 GPU 选择；服务名留空时从 `--model` 等参数推断
 2. POST `/api/custom-services` 校验命令引号，保存原始命令与 GPU 索引；若命令含合法 `--port`，仅被动记录该端口以支持 Open 与 Qwen ASR 页面，不作为必填项
 3. 注册项 upsert 到 `custom_services`，编辑时复用原 service_id 覆盖
 4. 旧 llama.cpp / vLLM 注册项会迁移为完整命令，保留原有服务与 GPU 配置
@@ -210,10 +210,10 @@ _download_lock   # 下载任务状态读写锁
 - `/api/logs?pid=<pid>` 读取指定进程日志尾部 200 行
 - 不传 pid 时读取最新受管进程日志；没有受管进程时回退到 `settings.log_file`
 
-**Qwen3-ASR-1.7B 专用转写：**
-1. 前端识别运行中的 vLLM 服务名、模型或命令中含 `Qwen3-ASR-1.7B` 的实例，将该实例的 Open 固定跳转到 `/asr`；其他服务仍打开原反向代理页
+**ASR 专用转写：**
+1. 服务注册时明确选择 ASR 或标准 LLM。ASR 服务的 Open 固定跳转到 `/asr`；标准 LLM 服务的 Open 仍打开原反向代理页
 2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，并行上传到 `/api/asr/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
-3. 后端自动使用唯一运行中的 Qwen3-ASR-1.7B vLLM 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
+3. 后端自动使用唯一运行中的 ASR 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
 5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
 6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git
@@ -261,13 +261,13 @@ _download_lock   # 下载任务状态读写锁
 单页面，暗色主题，max-width 1200px 居中。六个卡片区块纵向排列：
 
 1. **GPU 监控区** — 每张 GPU 的 util 波形图、多 GPU 卡片、受管进程表
-2. **服务管理区** — 顶部「已注册服务」列表（按运行状态显示 启动 或 停止/重启/可选 Open，另可编辑/删除）、下方为服务名、GPU 选择和完整启动命令的注册表单
+2. **服务管理区** — 顶部「已注册服务」列表（显示服务类型，按运行状态显示 启动 或 停止/重启/可选 Open，另可编辑/删除）、下方为服务名、服务类型、GPU 选择和完整启动命令的注册表单
 3. **服务日志** — 下拉框仅展示当前仍在运行的受管任务，readonly textarea 显示对应实时日志尾部
 4. **下载区** — HF 仓库ID、文件名（留空则全量下载整个仓库）、Download 按钮、强制重新下载复选框；可连续新增多个下载任务
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
 6. **设置区** — 模型下载目录、GPU 历史小时数与 Save 按钮
 
-Qwen3-ASR-1.7B 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 Qwen3-ASR 实例；顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
+ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 ASR 实例；标准 LLM 服务的 Open 则打开对应端口的原反向代理页。顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
 
 GPU 监控区使用 CSS Grid 横向展示 GPU 卡片：
 - `Auto`：`repeat(auto-fit, minmax(240px, 1fr))`
@@ -313,7 +313,7 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 | `loadManagedProcesses()` | 刷新受管进程并更新启动列表运行状态与日志选择器 |
 | `stopManagedProcess(pid)` | 停止指定受管实例 |
 | `restartManagedProcess(pid)` | 重启指定受管实例 |
-| `openManagedWebUI(pid)` | Qwen3-ASR-1.7B 打开专用转写页，其他服务打开原代理页 |
+| `openManagedWebUI(pid)` | ASR 服务打开固定转写页，标准 LLM 服务打开原代理页 |
 | `initAsrPage()` | 初始化固定 ASR 页的批量拖放上传、后台任务状态和历史自动刷新 |
 | `loadAsrHistory()` | 加载本地转写历史摘要并渲染可展开列表 |
 | `toggleAsrHistoryItem(id)` | 展开或收起一条历史记录，展开时按需读取全文 |
@@ -362,6 +362,7 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
   "svc_aaa": {
     "id": "svc_aaa",
     "name": "Qwen3-ASR-1.7B",
+    "service_category": "asr",
     "service_type": "llama",
     "model": "/home/lihan/models/Qwen3-ASR-1.7B-Q8_0.gguf",
     "port": 8083,
@@ -373,6 +374,7 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
   "svc_bbb": {
     "id": "svc_bbb",
     "name": "[vLLM]Qwen3-ASR-1.7B",
+    "service_category": "asr",
     "service_type": "vllm",
     "model": null,
     "port": 8085,

@@ -734,6 +734,12 @@
             <label for="custom-service-name">服务名</label>
             <input type="text" id="custom-service-name" placeholder="留空则从启动命令推断">
 
+            <label for="custom-service-category">服务类型</label>
+            <select id="custom-service-category">
+                <option value="llm">标准 LLM</option>
+                <option value="asr">ASR</option>
+            </select>
+
             <label>GPU</label>
             <div id="start-gpu-list" style="display:flex; gap:10px; flex-wrap:wrap; color:#aaa; font-size:0.9em;">
                 <span style="color:#888;">自动使用全部可见 GPU</span>
@@ -876,10 +882,17 @@ async function api(method, path, body) {
     return data;
 }
 
-function isQwen3AsrProcess(proc) {
+function isAsrProcess(proc) {
+    const service = customServices.find(item => item.id === proc?.service_id);
+    const category = proc?.service_category || service?.service_category;
+    if (category === "asr" || category === "llm") return category === "asr";
     const identity = [proc?.display_name, proc?.model_name, proc?.model, proc?.command]
         .filter(Boolean).join(" ").toLowerCase();
-    return identity.includes("qwen3-asr-1.7b");
+    return identity.includes("asr");
+}
+
+function serviceCategoryLabel(category) {
+    return category === "asr" ? "ASR" : "标准 LLM";
 }
 
 let asrHistoryRecords = [];
@@ -1167,6 +1180,7 @@ function resetServiceForm() {
     editingCustomServiceId = "";
     document.getElementById("custom-service-id").value = "";
     document.getElementById("custom-service-name").value = "";
+    document.getElementById("custom-service-category").value = "llm";
     document.getElementById("custom-service-command").value = "";
     document.querySelectorAll(".start-gpu").forEach(input => { input.checked = false; });
     document.getElementById("custom-service-save-btn").textContent = "保存服务";
@@ -1197,17 +1211,18 @@ function renderRegisteredServices() {
     wrap.innerHTML = customServices.map(service => {
         const run = runningMap[service.id];
         const detail = service.command || "";
+        const categoryText = serviceCategoryLabel(service.service_category);
         const pidSuffix = run ? ` <span style="font-size:0.8em;color:#7d8ba3;">· PID ${escapeHtml(run.pid)}</span>` : "";
         const launchActions = run
             ? `<button class="btn-danger" onclick="stopManagedProcess(${Number(run.pid)})">停止</button>
                <button class="btn-warning" onclick="restartManagedProcess(${Number(run.pid)})">重启</button>
-               ${run.port ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>` : ""}`
+               ${(service.service_category === "asr" || run.port) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(run.pid)})">打开</button>` : ""}`
             : `<button class="btn-success" onclick="startRegisteredService('${escapeHtml(service.id)}')">启动</button>`;
         const gpuText = Array.isArray(service.gpu_indexes) && service.gpu_indexes.length
             ? `GPU ${service.gpu_indexes.join(",")}` : "使用全部 GPU";
         return `
         <div class="custom-service-row">
-            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}</strong>
+            <strong title="${escapeHtml(service.name || "")}">${escapeHtml(service.name || "Unknown")}${pidSuffix}<span style="font-size:0.8em;color:#7d8ba3;"> · ${escapeHtml(categoryText)}</span></strong>
             <span style="font-size:0.82em; color:#aaa;">${escapeHtml(gpuText)}</span>
             <code title="${escapeHtml(detail)}">${escapeHtml(detail)}</code>
             <div class="custom-service-actions">
@@ -1228,6 +1243,7 @@ function editService(serviceId) {
     editingCustomServiceId = service.id;
     document.getElementById("custom-service-id").value = service.id;
     document.getElementById("custom-service-name").value = service.name || "";
+    document.getElementById("custom-service-category").value = service.service_category || "llm";
     document.getElementById("custom-service-command").value = service.command || "";
     const gpus = Array.isArray(service.gpu_indexes) ? service.gpu_indexes : [];
     document.querySelectorAll(".start-gpu").forEach(input => {
@@ -1239,12 +1255,13 @@ function editService(serviceId) {
 async function saveService() {
     const id = document.getElementById("custom-service-id").value || editingCustomServiceId;
     const name = document.getElementById("custom-service-name").value.trim();
+    const serviceCategory = document.getElementById("custom-service-category").value;
     const command = document.getElementById("custom-service-command").value.trim();
     if (!command) {
         showError("请输入启动命令");
         return;
     }
-    const payload = { name, command, gpu_indexes: selectedGpuIndexes() };
+    const payload = { name, command, service_category: serviceCategory, gpu_indexes: selectedGpuIndexes() };
     if (id) payload.id = id;
     try {
         await api("POST", "/api/custom-services", payload);
@@ -1389,7 +1406,7 @@ function updateGpuUI(data) {
     }
 
     tbody.innerHTML = managedProcesses.map(proc => {
-        const openAction = proc.port ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>` : "";
+        const openAction = (isAsrProcess(proc) || proc.port) ? `<button class="btn-primary" onclick="openManagedWebUI(${Number(proc.pid)})">Open</button>` : "";
         return `
         <tr>
             <td>${escapeHtml(proc.gpu ?? "-")}</td>
@@ -1530,7 +1547,7 @@ function drawGpuWaveform(canvas, gpu, startTs, endTs) {
 
 function openManagedWebUI(pid) {
     const proc = (managedProcessRecords || []).find(item => Number(item.pid) === Number(pid));
-    if (isQwen3AsrProcess(proc)) {
+    if (isAsrProcess(proc)) {
         window.open("/asr", "_blank");
         return;
     }
