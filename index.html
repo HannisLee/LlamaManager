@@ -446,6 +446,16 @@
             align-items: center;
             flex-wrap: wrap;
         }
+        .asr-history-display-actions {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .asr-history-display-actions-spacer {
+            flex: 1 1 auto;
+        }
         .asr-history-text {
             min-height: 180px;
             height: 260px;
@@ -942,6 +952,36 @@ const asrHistoryTextCache = new Map();
 const asrExtractionTextCache = new Map();
 const asrHistoryDisplayModes = new Map();
 
+function asrHistoryRecordsChanged(records) {
+    const current = JSON.stringify(asrHistoryRecords);
+    const next = JSON.stringify(records);
+    return current !== next;
+}
+
+function saveAsrHistoryScrollPositions() {
+    return {
+        pageX: window.scrollX,
+        pageY: window.scrollY,
+        textAreas: Array.from(document.querySelectorAll(".asr-history-text")).map(textArea => ({
+            id: textArea.id,
+            scrollTop: textArea.scrollTop,
+            scrollLeft: textArea.scrollLeft,
+        })),
+    };
+}
+
+function restoreAsrHistoryScrollPositions(positions) {
+    if (!positions) return;
+    positions.textAreas.forEach(({ id, scrollTop, scrollLeft }) => {
+        const textArea = document.getElementById(id);
+        if (textArea) {
+            textArea.scrollTop = scrollTop;
+            textArea.scrollLeft = scrollLeft;
+        }
+    });
+    window.scrollTo(positions.pageX, positions.pageY);
+}
+
 function formatAsrDate(timestamp) {
     if (!timestamp) return "-";
     return new Date(Number(timestamp) * 1000).toLocaleString("zh-CN", {
@@ -1025,13 +1065,14 @@ function renderAsrHistory() {
                     <textarea id="asr-history-name-${record.id}" class="asr-history-name-input" rows="2" maxlength="160" aria-label="记录名称">${escapeHtml(record.name || "")}</textarea>
                     <div class="asr-history-edit-actions">
                         <button class="btn-secondary" onclick="saveAsrHistoryName('${record.id}')">保存名称</button>
-                        <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制文字</button>
                     </div>
                 </div>
-                <div class="asr-history-edit-actions" style="margin-top:8px;">
+                <div class="asr-history-display-actions">
                     <button class="btn-secondary" onclick="showAsrOriginal('${record.id}')">原文</button>
                     <button class="btn-secondary" id="asr-extract-${record.id}" onclick="extractOrShowAsrHistory('${record.id}')">${record.has_extraction ? "已提取" : "一键提取"}</button>
                     <span class="asr-hint">${showingExtraction ? "当前显示：提取结果" : "当前显示：原文"}</span>
+                    <span class="asr-history-display-actions-spacer"></span>
+                    <button class="btn-secondary" onclick="copyAsrHistoryText('${record.id}')">复制</button>
                 </div>
                 <textarea id="asr-history-text-${record.id}" class="log-area asr-history-text" readonly>${escapeHtml(cachedText || textPlaceholder)}</textarea>
             </div>` : "";
@@ -1053,9 +1094,15 @@ function renderAsrHistory() {
 
 async function loadAsrHistory() {
     const data = await api("GET", "/api/asr/history");
-    asrHistoryRecords = Array.isArray(data.records) ? data.records : [];
-    if (!asrHistoryRecords.some(record => record.id === asrExpandedRecordId)) asrExpandedRecordId = "";
+    const records = Array.isArray(data.records) ? data.records : [];
+    const expandedRecordExists = records.some(record => record.id === asrExpandedRecordId);
+    if (!asrHistoryRecordsChanged(records) && (!asrExpandedRecordId || expandedRecordExists)) return;
+
+    const scrollPositions = saveAsrHistoryScrollPositions();
+    asrHistoryRecords = records;
+    if (!expandedRecordExists) asrExpandedRecordId = "";
     renderAsrHistory();
+    restoreAsrHistoryScrollPositions(scrollPositions);
 }
 
 async function toggleAsrHistoryItem(recordId) {
