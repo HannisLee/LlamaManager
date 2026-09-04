@@ -842,6 +842,9 @@
             <div class="full-width" style="border-top:1px solid #2f3b52; margin-top:6px; padding-top:14px; color:#aaa;">OpenAI 兼容 API</div>
             <label for="set-openai-api-base-url">API 地址</label>
             <input type="url" id="set-openai-api-base-url" placeholder="https://api.openai.com/v1">
+            <label for="set-openai-api-model">模型名称</label>
+            <input type="text" id="set-openai-api-model" list="openai-api-model-options" placeholder="先测试连接以获取模型列表，也可手动输入">
+            <datalist id="openai-api-model-options"></datalist>
             <label for="set-openai-api-key">API 密钥</label>
             <input type="password" id="set-openai-api-key" autocomplete="new-password" placeholder="留空则不修改已保存的密钥">
             <div class="full-width checkbox-row">
@@ -1202,6 +1205,7 @@ async function loadSettings() {
     document.getElementById("set-model-dir").value = currentSettings.model_dir || "";
     document.getElementById("set-gpu-history-hours").value = currentSettings.gpu_history_hours || 2;
     document.getElementById("set-openai-api-base-url").value = currentSettings.openai_api_base_url || "";
+    document.getElementById("set-openai-api-model").value = currentSettings.openai_api_model || "";
     document.getElementById("set-openai-api-key").value = "";
     document.getElementById("set-openai-api-key").placeholder = currentSettings.openai_api_key_configured
         ? "已保存，留空则不修改"
@@ -1218,6 +1222,7 @@ async function saveSettings() {
         model_dir: document.getElementById("set-model-dir").value,
         gpu_history_hours: parseFloat(document.getElementById("set-gpu-history-hours").value) || 2,
         openai_api_base_url: document.getElementById("set-openai-api-base-url").value.trim(),
+        openai_api_model: document.getElementById("set-openai-api-model").value.trim(),
         openai_api_key: document.getElementById("set-openai-api-key").value,
         clear_openai_api_key: document.getElementById("set-clear-openai-api-key").checked,
     };
@@ -1242,6 +1247,11 @@ async function testOpenAiApi() {
     status.textContent = "正在测试连接...";
     try {
         const result = await api("POST", "/api/openai/test");
+        const models = Array.isArray(result.models) ? result.models : [];
+        const options = document.getElementById("openai-api-model-options");
+        options.innerHTML = models.map(model => `<option value="${escapeHtml(model)}"></option>`).join("");
+        const modelInput = document.getElementById("set-openai-api-model");
+        if (!modelInput.value && models.length) modelInput.value = models[0];
         status.textContent = result.message || "连接成功";
     } catch (e) {
         status.textContent = `测试失败：${e.message}`;

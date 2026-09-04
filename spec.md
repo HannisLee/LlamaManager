@@ -266,7 +266,7 @@ _download_lock   # 下载任务状态读写锁
 3. **服务日志** — 下拉框仅展示当前仍在运行的受管任务，readonly textarea 显示对应实时日志尾部
 4. **下载区** — HF 仓库ID、文件名（留空则全量下载整个仓库）、Download 按钮、强制重新下载复选框；可连续新增多个下载任务
 5. **下载任务区** — 多任务进度列表、每任务 Cancel/Logs 操作、下载日志任务下拉、Refresh 按钮、readonly textarea
-6. **设置区** — 模型下载目录、GPU 历史小时数，以及 OpenAI 兼容 API 地址和密钥。密钥只写入后端本地 settings.json，读取设置时仅返回是否已配置；可测试 `/models` 连接并在页面显示结果
+6. **设置区** — 模型下载目录、GPU 历史小时数，以及 OpenAI 兼容 API 地址、模型名称和密钥。密钥只写入后端本地 settings.json，读取设置时仅返回是否已配置；可测试 `/models` 连接并在页面显示结果、填充模型名称候选项
 
 ASR 服务的 Open 会复用同一个 `index.html`，并固定通过 `/asr` 呈现独立转写页，不加载管理后台的轮询逻辑。该页自动使用唯一运行中的 ASR 实例；标准 LLM 服务的 Open 则打开对应端口的原反向代理页。顶部为服务与批量拖放/点击上传区，下方为按时间倒序自动刷新的历史记录；仅在点击已完成条目时显示全文，并支持名称修改。历史标题和名称编辑框均支持两行展示，状态徽章固定单行。
 
@@ -339,6 +339,7 @@ GPU 进程表只展示 LlamaManager 当前运行期启动的受管实例，字�
 | `model_dir` | string | `~/models` | GGUF 模型目录（递归扫描） |
 | `gpu_history_hours` | number | `2` | GPU util 波形显示的历史小时数 |
 | `openai_api_base_url` | string | `""` | OpenAI 兼容 API 基地址，例如 `https://api.openai.com/v1` |
+| `openai_api_model` | string | `""` | OpenAI 兼容 API 调用时使用的模型名称 |
 | `openai_api_key` | string | `""` | OpenAI 兼容 API 密钥；仅后端保存，永不通过读取设置接口返回 |
 | `model_params` | object | `{}` | （已废弃）按模型路径保存的启动参数，启动时迁移为 llama 注册项后清空 |
 | `custom_services` | object | `{}` | 用户注册的通用命令服务 |

@@ -189,6 +189,8 @@ def _save_settings(data: dict) -> dict:
                 if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                     raise ValueError("OpenAI 兼容 API 地址必须是有效的 http 或 https 地址")
             existing[OPENAI_API_BASE_URL_KEY] = api_base_url
+        if "openai_api_model" in data:
+            existing["openai_api_model"] = str(data.get("openai_api_model") or "").strip()
 
         if data.get("clear_openai_api_key"):
             existing.pop(OPENAI_API_KEY_KEY, None)
@@ -2152,7 +2154,11 @@ async def test_openai_compatible_api():
         model_names = [str(item.get("id") or "") for item in models if isinstance(item, dict)]
         model_names = [name for name in model_names if name]
         suffix = f"：{', '.join(model_names[:3])}" if model_names else ""
-        return JSONResponse({"ok": True, "message": f"连接成功，获取到 {len(models)} 个模型{suffix}"})
+        return JSONResponse({
+            "ok": True,
+            "message": f"连接成功，获取到 {len(models)} 个模型{suffix}",
+            "models": model_names,
+        })
     return JSONResponse({"ok": True, "message": f"连接成功（HTTP {response.status_code}）"})
 
 
