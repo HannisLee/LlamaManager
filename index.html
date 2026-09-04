@@ -1279,7 +1279,7 @@ async function sendGenericChatMessage(pid) {
             .filter(message => message !== assistantMessage);
         if (systemPrompt.value.trim()) messages.unshift({ role: "system", content: systemPrompt.value.trim() });
         let requestError = await requestGenericOpenAiChat(pid, model, messages, assistantMessage);
-        if (requestError && !assistantMessage.content) {
+        if (requestError || !assistantMessage.content) {
             status.textContent = "正在改用 llama.cpp 原生接口生成回复...";
             requestError = await requestGenericLlamaCompletion(pid, messages, assistantMessage);
         }
