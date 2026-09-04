@@ -8,3 +8,4 @@ data/asr_jobs/
 .claude/
 nohup.out
 *.bak
+settings.json
