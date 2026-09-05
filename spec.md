@@ -31,6 +31,7 @@ LlamaManager/
 │   └── downloads/          # 多下载任务独立日志
 ├── spec.md             # 本文件，架构文档
 ├── version.md          # 版本变更记录
+├── MEMORY.md           # 项目长期运行与兼容性记忆
 ├── CLAUDE.md           # Claude Code 项目指令
 └── README.md           # 使用说明
 ```
@@ -218,8 +219,8 @@ _download_lock   # 下载任务状态读写锁
 
 **ASR 专用转写：**
 1. 服务注册时明确选择 ASR 或标准 LLM。ASR 服务的 Open 固定跳转到 `/asr`；标准 LLM 服务的 Open 打开 `/chat/{pid}` 通用聊天页
-2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，并行上传到 `/api/asr/transcriptions`；支持 aac、flac、m4a、mp3、mp4、ogg、opus、wav、webm，单文件最多 4 GB
-3. 后端自动使用唯一运行中的 ASR 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并使用 ffmpeg 静音检测按语音边界切为 FLAC；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分
+2. 专用页将服务与批量拖放/点击上传区置顶，转写历史放在下方；可一次选择或拖入多个音频，支持 M4S 及所有可被 FFmpeg 解码的常见音视频格式，单文件最多 4 GB。后端不再按扩展名拒绝文件，而是以文件内容交给 FFmpeg 探测
+3. 后端自动使用唯一运行中的 ASR 受管实例；未运行时返回 404，存在多个实例时返回 409。音频写入系统临时目录，并由 FFmpeg 解码、静音检测和导出为 FLAC 后再转写；初始单片最长 600 秒，若导出后的 FLAC 超过 16 MB 安全阈值则自动继续切分。未安装 FFmpeg 时会返回安装提示；没有初始化信息的独立 DASH M4S 片段无法单独解码，需提供完整 MP4/M4A 或合并后的媒体文件
 4. 后端按顺序向该实例本机地址的 `/v1/audio/transcriptions` 发送 multipart 请求，自动从 `qwen-asr-serve` 命令读取模型路径，兼容 `text` 和 OpenAI `choices` 返回格式并去除 `<asr_text>` 标记；服务端仍返回“文件过大”时会再切分后重试该片段
 5. 服务端为每个上传文件立即创建历史 item，并在后台队列执行转写；默认同时只运行 1 个任务，以避免单卡 vLLM 争抢资源。状态依次为「排队中 / 转写中 / 已完成 / 失败」
 6. 所有临时音频和 FLAC 切片在任务结束后删除；成功转写的全文保存到 `data/asr_history/<记录 ID>.txt`，信息提取结果保存到 `data/asr_history/<记录 ID>.extracted.txt`，元数据保存到 `data/asr_history/records.json`，临时任务目录为 `data/asr_jobs/`，三者均不纳入 Git

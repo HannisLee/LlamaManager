@@ -1643,10 +1643,10 @@ function renderAsrPage() {
             <h1><img src="/icon.png" alt="LlamaManager" style="height:32px;vertical-align:middle;"> Qwen3 ASR 音频转写</h1>
             <div class="card">
                 <h2 id="asr-service-name">正在连接服务...</h2>
-                <input type="file" id="asr-audio-file" accept="audio/*,.m4a,.flac,.opus" multiple style="display:none;">
+                <input type="file" id="asr-audio-file" accept="audio/*,video/*,.m4s,.mkv,.ts" multiple style="display:none;">
                 <label for="asr-audio-file" id="asr-drop-zone" class="asr-drop-zone">
                     <strong>拖放一个或多个音频到这里，或点击选择文件</strong>
-                    <div class="asr-hint">支持 MP3、M4A、WAV、FLAC、OGG、OPUS、AAC、WEBM 等常见格式</div>
+                    <div class="asr-hint">支持 M4S 及 FFmpeg 可解码的常见音视频格式；上传后会先在本机转为 FLAC 再转写</div>
                 </label>
                 <div id="asr-file-name" class="asr-file-name" style="margin-top:8px;">尚未选择音频文件</div>
                 <div class="asr-hint">可一次上传多个文件。音频仅在本机临时处理，转写任务会依次执行，单片最长 10 分钟。</div>

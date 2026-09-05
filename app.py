@@ -75,9 +75,9 @@ ASR_MAX_CHUNK_SECONDS = 600
 ASR_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
 ASR_MIN_CHUNK_SECONDS = 15
 SERVICE_CATEGORIES = {"asr", "llm"}
-ASR_ALLOWED_AUDIO_SUFFIXES = {
-    ".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
-}
+# 上传文件不再按扩展名限制。所有能够被 FFmpeg 解码的媒体都会在本地导出为
+# FLAC 切片后再送给 ASR 服务，扩展名仅用于保留原始文件名和帮助 FFmpeg 判断格式。
+ASR_MAX_FILENAME_SUFFIX_LENGTH = 16
 ASR_HISTORY_DIR = APP_DIR / "data" / "asr_history"
 ASR_HISTORY_INDEX_PATH = ASR_HISTORY_DIR / "records.json"
 ASR_EXTRACTION_PROMPT_KEY = "asr_extraction_prompt"
@@ -1593,7 +1593,11 @@ def _run_asr_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(command, text=True, capture_output=True, check=True)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"未找到音频处理工具: {exc.filename}") from exc
+        tool = Path(str(exc.filename or "FFmpeg")).name
+        raise RuntimeError(
+            f"未找到音频处理工具 {tool}。请安装 FFmpeg（Ubuntu/Debian："
+            "sudo apt-get install ffmpeg）后重试"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or "音频处理失败").strip()
         raise RuntimeError(message[-1200:]) from exc
@@ -1601,10 +1605,24 @@ def _run_asr_command(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _asr_probe_duration(input_path: Path) -> float:
     """使用 ffprobe 获取音频时长。"""
-    result = _run_asr_command([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(input_path),
-    ])
+    try:
+        result = _run_asr_command([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(input_path),
+        ])
+    except RuntimeError as exc:
+        detail = str(exc)
+        # DASH 的独立 .m4s 媒体片段通常没有 moov 初始化信息，FFmpeg 无法仅凭
+        # 一个分片还原音轨。这个情况与普通格式不支持不同，需要用户提供完整媒体。
+        if input_path.suffix.lower() == ".m4s" and "moov atom not found" in detail.lower():
+            raise RuntimeError(
+                "这个 M4S 媒体片段缺少初始化信息，无法单独转码。请上传包含音轨信息的"
+                "完整 MP4/M4A 文件，或先用对应的 MPD 与初始化段合并后再上传"
+            ) from exc
+        raise RuntimeError(
+            "FFmpeg 无法识别或解码这个文件；可解码的媒体会自动转为 FLAC 后转写。"
+            f"原始错误：{detail}"
+        ) from exc
     try:
         duration = float(result.stdout.strip())
     except ValueError as exc:
@@ -1715,6 +1733,14 @@ def _asr_extract_text(response: dict) -> str:
     text = re.sub(r"language\s+\S+\s*<asr_text>", " ", text, flags=re.I)
     text = text.replace("<asr_text>", " ")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _asr_upload_suffix(filename: str) -> str:
+    """返回可安全用于临时文件的扩展名；未知格式仍交给 FFmpeg 按内容探测。"""
+    suffix = Path(filename).suffix.lower()
+    if re.fullmatch(rf"\.[a-z0-9]{{1,{ASR_MAX_FILENAME_SUFFIX_LENGTH}}}", suffix):
+        return suffix
+    return ".bin"
 
 
 def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
@@ -2196,10 +2222,7 @@ async def transcribe_with_qwen3_asr(request: Request):
     item = _get_asr_service_item()
     filename = unquote(request.headers.get("x-audio-filename", "audio"))
     filename = Path(filename).name
-    suffix = Path(filename).suffix.lower()
-    if suffix not in ASR_ALLOWED_AUDIO_SUFFIXES:
-        allowed = "、".join(sorted(item.lstrip(".") for item in ASR_ALLOWED_AUDIO_SUFFIXES))
-        raise HTTPException(status_code=400, detail=f"不支持的音频格式，请使用：{allowed}")
+    suffix = _asr_upload_suffix(filename)
     try:
         content_length = int(request.headers.get("content-length", "0"))
     except ValueError:
