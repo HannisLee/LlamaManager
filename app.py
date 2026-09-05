@@ -1603,6 +1603,43 @@ def _run_asr_command(command: list[str]) -> subprocess.CompletedProcess[str]:
         raise RuntimeError(message[-1200:]) from exc
 
 
+def _run_asr_ffmpeg_with_progress(
+    command: list[str], total_duration: float, on_progress=None,
+) -> str:
+    """运行 FFmpeg 并从 progress 输出中回传当前已处理的音频比例。"""
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        tool = Path(str(exc.filename or "ffmpeg")).name
+        raise RuntimeError(
+            f"未找到音频处理工具 {tool}。请安装 FFmpeg（Ubuntu/Debian："
+            "sudo apt-get install ffmpeg）后重试"
+        ) from exc
+
+    output_lines: list[str] = []
+    if process.stderr is not None:
+        for line in process.stderr:
+            output_lines.append(line)
+            if on_progress is None:
+                continue
+            match = re.match(r"out_time_(?:us|ms)=(\d+)", line.strip())
+            if match and total_duration > 0:
+                # FFmpeg 的 progress 时间字段单位为微秒；保留 ms 是为兼容旧版本。
+                elapsed = int(match.group(1)) / 1_000_000
+                on_progress(max(0.0, min(1.0, elapsed / total_duration)))
+    return_code = process.wait()
+    output = "".join(output_lines)
+    if return_code != 0:
+        raise RuntimeError((output or "音频处理失败").strip()[-1200:])
+    return output
+
+
 def _asr_probe_duration(input_path: Path) -> float:
     """使用 ffprobe 获取音频时长。"""
     try:
@@ -1632,18 +1669,22 @@ def _asr_probe_duration(input_path: Path) -> float:
     return duration
 
 
-def _asr_speech_intervals(input_path: Path, total_duration: float) -> list[tuple[float, float]]:
+def _asr_speech_intervals(
+    input_path: Path, total_duration: float, on_progress=None,
+) -> list[tuple[float, float]]:
     """通过静音检测取得语音段；检测失败时退回整段音频。"""
-    result = subprocess.run([
-        "ffmpeg", "-hide_banner", "-vn", "-i", str(input_path),
-        "-af", "silencedetect=noise=-35dB:d=0.6", "-f", "null", "-",
-    ], text=True, capture_output=True)
-    if result.returncode != 0:
+    try:
+        output = _run_asr_ffmpeg_with_progress([
+            "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:2",
+            "-vn", "-i", str(input_path), "-af", "silencedetect=noise=-35dB:d=0.6",
+            "-f", "null", "-",
+        ], total_duration, on_progress)
+    except RuntimeError:
         return [(0.0, total_duration)]
 
     starts: list[float] = []
     ends: list[float] = []
-    for line in result.stderr.splitlines():
+    for line in output.splitlines():
         start_match = re.search(r"silence_start:\s*([0-9.]+)", line)
         end_match = re.search(r"silence_end:\s*([0-9.]+)", line)
         if start_match:
@@ -1743,12 +1784,27 @@ def _asr_upload_suffix(filename: str) -> str:
     return ".bin"
 
 
-def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
+def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path, on_progress=None) -> dict:
     """按时长和实际文件大小切片，再逐片请求本机 Qwen3-ASR 服务。"""
+    if on_progress:
+        on_progress("processing", 0, "正在读取音频信息")
     total_duration = _asr_probe_duration(input_path)
-    chunks = _asr_build_chunks(_asr_speech_intervals(input_path, total_duration), total_duration)
+    if on_progress:
+        on_progress("processing", 1, f"已读取音频时长：{total_duration:.1f} 秒")
+    chunks = _asr_build_chunks(
+        _asr_speech_intervals(
+            input_path,
+            total_duration,
+            lambda value: on_progress and on_progress(
+                "processing", max(1, round(value * 100)), "FFmpeg 正在分析音频和静音位置"
+            ),
+        ),
+        total_duration,
+    )
     if not chunks:
         raise RuntimeError("未从音频中检测到可转写内容")
+    if on_progress:
+        on_progress("processing", 100, f"FFmpeg 分析完成，已规划 {len(chunks)} 个转写片段")
 
     endpoint = f"http://127.0.0.1:{int(item['port'])}/v1/audio/transcriptions"
     model = _qwen3_asr_model_from_command(item.get("command") or [])
@@ -1766,6 +1822,13 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
             duration = end - start
             chunk_serial += 1
             chunk_path = work_dir / f"chunk-{chunk_serial:03d}.flac"
+            total_chunks = len(pending_chunks)
+            current_progress = round(completed_chunks / total_chunks * 100)
+            if on_progress:
+                on_progress(
+                    "transcribing", current_progress,
+                    f"FFmpeg 正在转码第 {chunk_position + 1}/{total_chunks} 个片段",
+                )
             file_size = _export_asr_chunk(input_path, chunk_path, start, end)
 
             if file_size > ASR_TARGET_CHUNK_BYTES:
@@ -1779,6 +1842,8 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
                 pending_chunks[chunk_position:chunk_position + 1] = _asr_split_chunk(
                     start, end, split_count
                 )
+                if on_progress:
+                    on_progress("transcribing", current_progress, "片段较大，FFmpeg 正在重新切分")
                 try:
                     chunk_path.unlink()
                 except OSError:
@@ -1786,6 +1851,11 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
                 continue
 
             with chunk_path.open("rb") as audio_file:
+                if on_progress:
+                    on_progress(
+                        "transcribing", current_progress,
+                        f"ASR 正在转写第 {chunk_position + 1}/{total_chunks} 个片段",
+                    )
                 response = client.post(
                     endpoint,
                     data={"model": model, "response_format": "json"},
@@ -1804,6 +1874,8 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
                         pending_chunks[chunk_position:chunk_position + 1] = _asr_split_chunk(
                             start, end, split_count
                         )
+                        if on_progress:
+                            on_progress("transcribing", current_progress, "服务限制文件大小，正在重新切分")
                         try:
                             chunk_path.unlink()
                         except OSError:
@@ -1824,6 +1896,12 @@ def _transcribe_qwen3_asr(item: dict, input_path: Path, work_dir: Path) -> dict:
                 texts.append(text)
             completed_chunks += 1
             chunk_position += 1
+            if on_progress:
+                on_progress(
+                    "transcribing",
+                    round(completed_chunks / len(pending_chunks) * 100),
+                    f"已完成 {completed_chunks}/{len(pending_chunks)} 个片段",
+                )
             try:
                 chunk_path.unlink()
             except OSError:
@@ -1867,6 +1945,10 @@ def _write_asr_history(records: list[dict]):
 
 def _asr_history_snapshot(record: dict) -> dict:
     """生成不含全文的历史记录摘要。"""
+    status = record.get("status") or "completed"
+    progress = record.get("progress")
+    if not isinstance(progress, (int, float)):
+        progress = 100 if status == "completed" else 0
     return {
         "id": record.get("id"),
         "name": record.get("name"),
@@ -1875,7 +1957,9 @@ def _asr_history_snapshot(record: dict) -> dict:
         "duration": record.get("duration"),
         "chunks": record.get("chunks"),
         "text_length": record.get("text_length", 0),
-        "status": record.get("status") or "completed",
+        "status": status,
+        "progress": max(0, min(100, round(progress))),
+        "progress_detail": record.get("progress_detail") or "",
         "error": record.get("error"),
         "has_extraction": bool(record.get("extraction_file")),
     }
@@ -1904,7 +1988,9 @@ def _create_asr_history_record(filename: str) -> dict:
         "chunks": None,
         "text_length": 0,
         "transcript_file": transcript_name,
-        "status": "queued",
+        "status": "uploading",
+        "progress": 0,
+        "progress_detail": "正在接收上传",
         "error": None,
     }
     with _asr_history_lock:
@@ -1952,21 +2038,62 @@ def _complete_asr_history_record(record_id: str, result: dict) -> dict:
         "chunks": result["chunks"],
         "text_length": len(result["text"]),
         "status": "completed",
+        "progress": 100,
+        "progress_detail": "转写完成",
         "error": None,
     })
+
+
+def _make_asr_progress_reporter(record_id: str):
+    """创建限流的任务进度写入器，避免 FFmpeg 高频输出造成频繁写盘。"""
+    last_status = None
+    last_progress = -1
+    last_detail = ""
+    last_saved_at = 0.0
+
+    def report(status: str, progress: int | float, detail: str):
+        nonlocal last_status, last_progress, last_detail, last_saved_at
+        progress = max(0, min(100, round(progress)))
+        if status == last_status:
+            progress = max(progress, last_progress)
+        now = time.monotonic()
+        changed = status != last_status or progress != last_progress or detail != last_detail
+        if not changed:
+            return
+        if (
+            status == last_status
+            and detail == last_detail
+            and progress - last_progress < 2
+            and now - last_saved_at < 0.8
+        ):
+            return
+        _update_asr_history_record(record_id, {
+            "status": status,
+            "progress": progress,
+            "progress_detail": detail[:300],
+            "error": None,
+        })
+        last_status = status
+        last_progress = progress
+        last_detail = detail
+        last_saved_at = now
+
+    return report
 
 
 def _run_asr_history_task(record_id: str, item: dict, input_path: Path, work_dir: Path):
     """按队列执行一个转写任务，并将结果写回本地历史。"""
     with _asr_task_semaphore:
+        report_progress = _make_asr_progress_reporter(record_id)
         try:
-            _update_asr_history_record(record_id, {"status": "transcribing", "error": None})
-            result = _transcribe_qwen3_asr(item, input_path, work_dir)
+            report_progress("processing", 0, "任务已开始，正在等待 FFmpeg 处理")
+            result = _transcribe_qwen3_asr(item, input_path, work_dir, report_progress)
             _complete_asr_history_record(record_id, result)
         except Exception as exc:
             try:
                 _update_asr_history_record(record_id, {
                     "status": "error",
+                    "progress_detail": "处理失败",
                     "error": str(exc)[:1500],
                 })
             except Exception:
@@ -2086,7 +2213,7 @@ def _delete_asr_history_record(record_id: str) -> dict:
         for index, record in enumerate(records):
             if record.get("id") != record_id:
                 continue
-            if record.get("status") in {"queued", "transcribing"}:
+            if record.get("status") in {"uploading", "queued", "processing", "transcribing"}:
                 raise HTTPException(status_code=409, detail="转写进行中，暂时不能删除")
             deleted_record = records.pop(index)
             _write_asr_history(records)
@@ -2236,23 +2363,44 @@ async def transcribe_with_qwen3_asr(request: Request):
         work_dir.mkdir(parents=True, exist_ok=True)
         input_path = work_dir / f"audio{suffix}"
         received = 0
+        last_upload_progress = -1
         with input_path.open("wb") as output:
             async for chunk in request.stream():
                 received += len(chunk)
                 if received > ASR_MAX_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="音频文件不能超过 4 GB")
                 output.write(chunk)
+                if content_length > 0:
+                    progress = min(100, round(received / content_length * 100))
+                    if progress >= last_upload_progress + 2 or progress == 100:
+                        _update_asr_history_record(history_record["id"], {
+                            "status": "uploading",
+                            "progress": progress,
+                            "progress_detail": f"正在接收上传：{progress}%",
+                            "error": None,
+                        })
+                        last_upload_progress = progress
         if received == 0:
             raise HTTPException(status_code=400, detail="请选择要上传的音频文件")
+        history_record = _update_asr_history_record(history_record["id"], {
+            "status": "queued",
+            "progress": 0,
+            "progress_detail": "上传完成，正在等待转写队列",
+            "error": None,
+        })
     except HTTPException:
         if "history_record" in locals():
-            _update_asr_history_record(history_record["id"], {"status": "error", "error": "上传未完成"})
+            _update_asr_history_record(history_record["id"], {
+                "status": "error", "progress_detail": "上传未完成", "error": "上传未完成",
+            })
         if "work_dir" in locals():
             shutil.rmtree(work_dir, ignore_errors=True)
         raise
     except OSError as exc:
         if "history_record" in locals():
-            _update_asr_history_record(history_record["id"], {"status": "error", "error": "上传保存失败"})
+            _update_asr_history_record(history_record["id"], {
+                "status": "error", "progress_detail": "上传保存失败", "error": "上传保存失败",
+            })
         if "work_dir" in locals():
             shutil.rmtree(work_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"保存上传音频失败：{str(exc)[:500]}") from exc

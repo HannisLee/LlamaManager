@@ -417,6 +417,60 @@
             font-size: 0.82em;
             white-space: nowrap;
         }
+        .asr-progress-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .asr-progress-row {
+            padding: 10px 12px;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            background: #0f1629;
+        }
+        .asr-progress-title,
+        .asr-progress-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .asr-progress-title {
+            color: #e7eef8;
+            font-size: 0.9em;
+        }
+        .asr-progress-title strong {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .asr-progress-track {
+            height: 8px;
+            margin-top: 8px;
+            overflow: hidden;
+            border: 1px solid #33435e;
+            border-radius: 999px;
+            background: #0a0a1a;
+        }
+        .asr-progress-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #1f6feb, #3fb950);
+            transition: width 0.25s ease;
+        }
+        .asr-progress-meta {
+            margin-top: 5px;
+            color: #8fa1bd;
+            font-size: 0.82em;
+        }
+        .asr-history-progress {
+            padding: 0 12px 11px;
+        }
+        .asr-history-progress .asr-progress-track {
+            margin-top: 0;
+        }
+        .asr-history-progress .asr-progress-meta {
+            margin-top: 5px;
+        }
         .asr-history-content {
             padding: 0 12px 12px;
             border-top: 1px solid #2f3b52;
@@ -1621,7 +1675,9 @@ function formatAsrDate(timestamp) {
 
 function asrStatusLabel(status) {
     return {
+        uploading: "上传中",
         queued: "排队中",
+        processing: "FFmpeg 处理中",
         transcribing: "转写中",
         completed: "已完成",
         error: "失败",
@@ -1631,8 +1687,17 @@ function asrStatusLabel(status) {
 function asrStatusClass(status) {
     if (status === "completed") return "badge badge-running";
     if (status === "error") return "badge badge-danger";
-    if (status === "transcribing") return "badge badge-warning";
+    if (status === "processing" || status === "transcribing") return "badge badge-warning";
     return "badge badge-stopped";
+}
+
+function asrProgressBar(progress, detail, className = "") {
+    const value = Math.max(0, Math.min(100, Math.round(Number(progress) || 0)));
+    return `
+        <div class="${className}">
+            <div class="asr-progress-track"><div class="asr-progress-fill" style="width:${value}%"></div></div>
+            <div class="asr-progress-meta"><span>${escapeHtml(detail || "正在处理")}</span><span>${value}%</span></div>
+        </div>`;
 }
 
 function renderAsrPage() {
@@ -1655,6 +1720,7 @@ function renderAsrPage() {
                     <button class="btn-secondary" onclick="window.close()">关闭页面</button>
                 </div>
                 <div id="asr-status" class="asr-hint"></div>
+                <div id="asr-upload-progress-list" class="asr-progress-list"></div>
             </div>
             <div class="card">
                 <h2>转写历史</h2>
@@ -1682,6 +1748,7 @@ function renderAsrHistory() {
     wrap.innerHTML = asrHistoryRecords.map(record => {
         const expanded = record.id === asrExpandedRecordId;
         const status = record.status || "completed";
+        const isActive = ["uploading", "queued", "processing", "transcribing"].includes(status);
         const durationText = record.duration === null || record.duration === undefined ? "时长待获取" : `${record.duration} 秒`;
         const meta = `${formatAsrDate(record.uploaded_at)} · ${record.original_filename || "未知文件"} · ${durationText}`;
         const displayMode = asrHistoryDisplayModes.get(record.id) || "original";
@@ -1705,6 +1772,9 @@ function renderAsrHistory() {
                 </div>
                 <textarea id="asr-history-text-${record.id}" class="log-area asr-history-text" readonly>${escapeHtml(cachedText || textPlaceholder)}</textarea>
             </div>` : "";
+        const progress = isActive
+            ? asrProgressBar(record.progress, record.progress_detail || asrStatusLabel(status), "asr-history-progress")
+            : "";
         return `
             <div class="asr-history-item">
                 <div class="asr-history-header">
@@ -1714,8 +1784,9 @@ function renderAsrHistory() {
                         <span class="${asrStatusClass(status)}">${asrStatusLabel(status)}</span>
                         <span class="asr-history-meta">${escapeHtml(formatAsrDate(record.uploaded_at))}</span>
                     </button>
-                    <button class="btn-danger asr-history-delete" onclick="deleteAsrHistory('${record.id}')" title="删除这条转写历史">删除</button>
+                    <button class="btn-danger asr-history-delete" onclick="deleteAsrHistory('${record.id}')" title="${isActive ? "处理进行中，暂时不能删除" : "删除这条转写历史"}" ${isActive ? "disabled" : ""}>删除</button>
                 </div>
+                ${progress}
                 ${content}
             </div>`;
     }).join("");
@@ -1877,6 +1948,73 @@ async function initAsrPage() {
     const fileName = document.getElementById("asr-file-name");
     const status = document.getElementById("asr-status");
     let selectedFiles = [];
+    const uploadJobs = new Map();
+
+    function renderUploadJobs() {
+        const wrap = document.getElementById("asr-upload-progress-list");
+        if (!uploadJobs.size) {
+            wrap.innerHTML = "";
+            return;
+        }
+        wrap.innerHTML = Array.from(uploadJobs.values()).map(job => `
+            <div class="asr-progress-row">
+                <div class="asr-progress-title">
+                    <strong title="${escapeHtml(job.name)}">${escapeHtml(job.name)}</strong>
+                    <span>${escapeHtml(job.status)}</span>
+                </div>
+                ${asrProgressBar(job.progress, job.detail)}
+            </div>`).join("");
+    }
+
+    function updateUploadJob(id, changes) {
+        const current = uploadJobs.get(id);
+        if (!current) return;
+        uploadJobs.set(id, { ...current, ...changes });
+        renderUploadJobs();
+    }
+
+    function uploadAsrFile(file, jobId) {
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", "/api/asr/transcriptions");
+            request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+            request.setRequestHeader("X-Audio-Filename", encodeURIComponent(file.name));
+            request.upload.addEventListener("progress", event => {
+                if (event.lengthComputable) {
+                    const progress = Math.round(event.loaded / event.total * 100);
+                    updateUploadJob(jobId, {
+                        status: "正在上传",
+                        progress,
+                        detail: `已上传 ${(event.loaded / 1024 / 1024).toFixed(1)} MB / ${(event.total / 1024 / 1024).toFixed(1)} MB`,
+                    });
+                } else {
+                    updateUploadJob(jobId, { status: "正在上传", detail: "正在传输音频文件" });
+                }
+            });
+            request.addEventListener("load", () => {
+                let data = {};
+                try {
+                    data = request.responseText ? JSON.parse(request.responseText) : {};
+                } catch (e) {
+                    reject(new Error(`${file.name} 上传返回格式错误`));
+                    return;
+                }
+                if (request.status < 200 || request.status >= 300) {
+                    reject(new Error(data.detail || data.error || `${file.name} 上传失败（HTTP ${request.status}）`));
+                    return;
+                }
+                updateUploadJob(jobId, {
+                    status: "上传完成",
+                    progress: 100,
+                    detail: "已加入转写队列，请在下方查看处理进度",
+                });
+                resolve(data);
+            });
+            request.addEventListener("error", () => reject(new Error(`${file.name} 上传连接中断`)));
+            request.addEventListener("abort", () => reject(new Error(`${file.name} 上传已取消`)));
+            request.send(file);
+        });
+    }
 
     try {
         const service = await api("GET", "/api/asr");
@@ -1933,18 +2071,20 @@ async function initAsrPage() {
         fileInput.disabled = true;
         status.textContent = `正在上传 ${files.length} 个音频；上传完成后会在下方历史中显示转写状态。`;
         try {
-            const outcomes = await Promise.allSettled(files.map(async file => {
-                const response = await fetch("/api/asr/transcriptions", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": file.type || "application/octet-stream",
-                        "X-Audio-Filename": encodeURIComponent(file.name),
-                    },
-                    body: file,
+            uploadJobs.clear();
+            const outcomes = await Promise.allSettled(files.map((file, index) => {
+                const jobId = `${Date.now()}-${index}`;
+                uploadJobs.set(jobId, {
+                    name: file.name,
+                    status: "准备上传",
+                    progress: 0,
+                    detail: `文件大小 ${(file.size / 1024 / 1024).toFixed(1)} MB`,
                 });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || data.error || `${file.name} 上传失败`);
-                return data;
+                renderUploadJobs();
+                return uploadAsrFile(file, jobId).catch(error => {
+                    updateUploadJob(jobId, { status: "上传失败", detail: error.message });
+                    throw error;
+                });
             }));
             const accepted = outcomes.filter(result => result.status === "fulfilled").length;
             await loadAsrHistory();
